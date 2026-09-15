@@ -46,10 +46,40 @@ function getSigner() {
   }
 }
 
+/**
+ * Custodial signer for the ROLE_SYSTEM_CONNECTOR machine identity (issue
+ * #74) — a separate key from the admin deployer signer above, so automated
+ * PACS/HRMS-submitted transactions are attributable to the machine identity
+ * on-chain rather than the human admin service key. Falls back to the admin
+ * deployer signer (with a warning) when SYSTEM_CONNECTOR_PRIVATE_KEY isn't
+ * configured, so dev/demo environments without it don't crash.
+ */
+function getSystemConnectorSigner() {
+  if (!provider) return null;
+  if (!config.systemConnectorPrivateKey) {
+    logger.warn(
+      'SYSTEM_CONNECTOR_PRIVATE_KEY not set — falling back to the admin deployer signer for machine-submitted (PACS/HRMS) transactions. Set a dedicated key before production use (issue #74).'
+    );
+    return getSigner();
+  }
+  try {
+    const pk = config.systemConnectorPrivateKey.trim();
+    const formatted = pk.startsWith('0x') ? pk : `0x${pk}`;
+    return new ethers.Wallet(formatted, provider);
+  } catch {
+    return null;
+  }
+}
+
 function getContract(address, abi, withSigner = true) {
   if (!address || !abi || !provider) return null;
   const signerOrProvider = withSigner ? (getSigner() || provider) : provider;
   return new ethers.Contract(address, abi, signerOrProvider);
+}
+
+function getContractWithSigner(address, abi, signer) {
+  if (!address || !abi || !signer) return null;
+  return new ethers.Contract(address, abi, signer);
 }
 
 export const chainService = {
@@ -225,6 +255,34 @@ export const chainService = {
   },
 
   /**
+   * Admin: flip a facility zone's emergency lockdown flag on-chain (Issue #76).
+   * A locked zone denies all canAccessZone() checks regardless of clearance/SBU.
+   */
+  async toggleEmergencyLockdownOnChain({ zoneId, status }) {
+    const contract = this.getAccessControlContract(true);
+    if (!contract) {
+      logger.warn(`On-chain emergency lockdown toggle skipped for zone ${zoneId} — AccessControl contract not configured.`);
+      return { txHash: null, blockNumber: null, confirmed: false };
+    }
+
+    try {
+      const zoneBytes32 = ethers.encodeBytes32String(zoneId.slice(0, 31));
+      const tx = await contract.toggleEmergencyLockdown(zoneBytes32, status);
+      const receipt = await tx.wait();
+
+      logger.info(`Zone ${zoneId} emergency lockdown ${status ? 'ENABLED' : 'DISABLED'} on Ethereum Sepolia, Tx: ${receipt.hash}`);
+      return {
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+        confirmed: true,
+      };
+    } catch (err) {
+      logger.error(`On-chain emergency lockdown toggle failed: ${err.message}`);
+      return { txHash: null, blockNumber: null, confirmed: false, error: err.message };
+    }
+  },
+
+  /**
    * Mint defence hardware soulbound custody NFT (Issue #89)
    */
   async mintAssetOnChain({ custodianWallet, assetTag, serialNumber, classificationTier, sbu, ipfsCid }) {
@@ -337,10 +395,17 @@ export const chainService = {
   },
 
   /**
-   * Log arbitrary security event directly into AuditLog.sol (Issue #86)
+   * Log arbitrary security event directly into AuditLog.sol (Issue #86).
+   * Pass `asSystemConnector: true` (issue #74) to sign with the dedicated
+   * machine-identity custodial wallet instead of the admin deployer key —
+   * used by automated PACS/HRMS ingest so the resulting on-chain event (and
+   * the indexed AuditEvent it produces) is attributable to the machine
+   * identity, not a human admin.
    */
-  async logAuditEventOnChain({ eventType, actor, target, entityId, details }) {
-    const contract = this.getAuditLogContract(true);
+  async logAuditEventOnChain({ eventType, actor, target, entityId, details, asSystemConnector = false }) {
+    const contract = asSystemConnector
+      ? getContractWithSigner(config.auditLogAddress, auditLogAbi, getSystemConnectorSigner())
+      : this.getAuditLogContract(true);
     if (!contract) return { confirmed: false, error: 'AuditLog contract not configured' };
 
     try {

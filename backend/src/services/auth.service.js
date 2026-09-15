@@ -130,6 +130,81 @@ export const authService = {
       user,
     };
   },
+
+  /**
+   * Machine-only counterpart to verifyWalletLogin, for the ROLE_SYSTEM_CONNECTOR
+   * custodial identity (issue #74). Uses the same nonce + ECDSA
+   * proof-of-key-possession flow (request a nonce via POST /auth/nonce same
+   * as any wallet), but is a distinct code path from the human sign-in above
+   * — that path explicitly rejects SYSTEM_CONNECTOR identities so machine
+   * credentials never share a route/rate-limit/audit trail with human
+   * sign-in. Only succeeds for a wallet already provisioned with the
+   * SYSTEM_CONNECTOR role (see POST /api/admin/identities).
+   */
+  async verifySystemConnectorLogin({ walletAddress, signature }) {
+    let checksumAddress;
+    try {
+      checksumAddress = ethers.getAddress(walletAddress);
+    } catch {
+      throw new ApiError(400, 'Invalid Ethereum wallet address format');
+    }
+
+    const storedChallenge = nonceService.getStoredNonce(checksumAddress);
+    if (!storedChallenge) {
+      throw new ApiError(
+        401,
+        'No active authentication challenge found for this address or the challenge has expired. Please request a new nonce.'
+      );
+    }
+
+    let recoveredAddress;
+    try {
+      recoveredAddress = ethers.verifyMessage(storedChallenge.message, signature);
+    } catch (err) {
+      throw new ApiError(401, `Cryptographic signature verification failed: ${err.message}`);
+    }
+
+    if (ethers.getAddress(recoveredAddress) !== checksumAddress) {
+      throw new ApiError(401, 'Signature does not match the provided wallet address.');
+    }
+
+    nonceService.consumeNonce(checksumAddress);
+
+    if (!prisma) throw new ApiError(503, 'Database unavailable');
+
+    const userRecord = await prisma.user.findUnique({ where: { walletAddress: checksumAddress } });
+    if (!userRecord || userRecord.role !== 'SYSTEM_CONNECTOR') {
+      throw new ApiError(403, 'This login path is reserved for provisioned SYSTEM_CONNECTOR identities');
+    }
+
+    const user = {
+      id: userRecord.id,
+      walletAddress: userRecord.walletAddress,
+      displayName: userRecord.displayName,
+      externalId: userRecord.externalId,
+      role: userRecord.role,
+      clearanceLevel: userRecord.clearanceLevel,
+      sbu: userRecord.sbu,
+      isRegistered: true,
+    };
+
+    const tokenPayload = {
+      sub: user.id,
+      walletAddress: user.walletAddress,
+      role: user.role,
+      clearanceLevel: user.clearanceLevel,
+      sbu: user.sbu,
+      isRegistered: true,
+    };
+
+    const token = jwt.sign(tokenPayload, config.jwtSecret, {
+      expiresIn: config.jwtExpiresIn,
+    });
+
+    logger.info(`System-connector machine identity authenticated: ${checksumAddress}`);
+
+    return { token, user };
+  },
 };
 
 export default authService;

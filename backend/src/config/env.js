@@ -40,5 +40,10 @@ export default {
   pinataApiSecret: process.env.PINATA_API_SECRET,
   pinataGateway: process.env.PINATA_GATEWAY || 'https://gateway.pinata.cloud/ipfs',
   deployerPrivateKey: process.env.DEPLOYER_PRIVATE_KEY || process.env.PRIVATE_KEY,
+  // Dedicated custodial wallet for the ROLE_SYSTEM_CONNECTOR machine identity
+  // (issue #74) — kept separate from deployerPrivateKey so automated
+  // PACS/HRMS-submitted transactions are attributable to the machine
+  // identity on-chain, not the human admin service key.
+  systemConnectorPrivateKey: process.env.SYSTEM_CONNECTOR_PRIVATE_KEY,
   dossierEncryptionKey,
 };

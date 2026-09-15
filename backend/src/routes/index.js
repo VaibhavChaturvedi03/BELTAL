@@ -7,6 +7,7 @@ import transferRoutes from './transfer.route.js';
 import passRoutes from './pass.route.js';
 import auditRoutes from './audit.route.js';
 import verifyRoutes from './verify.route.js';
+import pacsRoutes from './pacs.route.js';
 
 const router = express.Router();
 
@@ -22,6 +23,7 @@ router.use('/transfers', transferRoutes);
 router.use('/passes',    passRoutes);
 router.use('/audit',     auditRoutes);
 router.use('/verify',    verifyRoutes);
+router.use('/pacs',      pacsRoutes);
 
 export default router;
 

@@ -1,122 +1,71 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useEffect, useRef } from "react";
+import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
+import { AuthProvider } from "./context/AuthContext";
+import ProtectedRoute from "./components/ProtectedRoute";
+import BaseLayout from "./components/layout/BaseLayout";
+import LandingPage from "./pages/LandingPage";
+import ContactPage from "./pages/ContactPage";
 
-function App() {
-  const [count, setCount] = useState(0)
+/**
+ * Completes the SPA transition when a nav link lands on "/" carrying a
+ * section hash (e.g. clicked from /contact, or a direct "/#features" deep
+ * link) — never a full page reload. The target section doesn't exist in
+ * the DOM the instant the route changes (LandingPage still has to render),
+ * so this polls for it across a bounded number of frames instead of
+ * guessing a fixed delay.
+ */
+function ScrollToHashSection() {
+  const location = useLocation();
+  const rafRef = useRef(null);
 
-  return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+  useEffect(() => {
+    cancelAnimationFrame(rafRef.current);
+    if (!location.hash) return;
 
-      <div className="ticks"></div>
+    const id = location.hash.slice(1);
+    let attempts = 0;
+    const MAX_ATTEMPTS = 60; // ~1s at 60fps — generous for a route+render cycle
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+    const tryScroll = () => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth" });
+        return;
+      }
+      attempts += 1;
+      if (attempts < MAX_ATTEMPTS) {
+        rafRef.current = requestAnimationFrame(tryScroll);
+      }
+    };
+    rafRef.current = requestAnimationFrame(tryScroll);
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [location.pathname, location.hash]);
+
+  return null;
 }
 
-export default App
+export default function App() {
+  return (
+    <AuthProvider>
+      <BrowserRouter>
+        <ScrollToHashSection />
+        <Routes>
+          {/* Public Routes */}
+          <Route path="/" element={<LandingPage />} />
+          <Route path="/contact" element={<ContactPage />} />
+          
+          {/* Protected Area wrapped in BaseLayout */}
+          <Route element={<ProtectedRoute allowedRoles={["admin", "manager", "auditor", "user"]} />}>
+            <Route element={<BaseLayout />}>
+              <Route path="/dashboard" element={<div className="p-8 text-slate-200">Secure Dashboard Area</div>} />
+            </Route>
+          </Route>
+          
+          {/* Fallback */}
+          <Route path="*" element={<LandingPage />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
+  );
+}
