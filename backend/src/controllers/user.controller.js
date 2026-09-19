@@ -36,6 +36,41 @@ export const userController = {
       next(err);
     }
   },
+
+  /**
+   * GET /api/users/transfer-recipients — registered users other than the
+   * caller. This deliberately exposes only the fields needed by the form.
+   */
+  async listTransferRecipients(req, res, next) {
+    try {
+      if (!prisma) {
+        throw new ApiError(503, 'Database unavailable');
+      }
+
+      const requestedLimit = Number.parseInt(req.query.limit, 10);
+      const limit = Number.isFinite(requestedLimit)
+        ? Math.min(Math.max(requestedLimit, 1), 100)
+        : 100;
+
+      const users = await prisma.user.findMany({
+        where: { id: { not: req.user.id } },
+        take: limit,
+        orderBy: { displayName: 'asc' },
+        select: {
+          id: true,
+          walletAddress: true,
+          displayName: true,
+          role: true,
+          clearanceLevel: true,
+          sbu: true,
+        },
+      });
+
+      return res.status(200).json({ success: true, data: { users } });
+    } catch (err) {
+      next(err);
+    }
+  },
 };
 
 export default userController;

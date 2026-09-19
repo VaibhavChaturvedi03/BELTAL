@@ -1,266 +1,120 @@
-/**
- * SiteHeader — shared navbar used by every page.
- *
- * On the Home page  → nav links scroll to anchor sections (#platform, etc.)
- * On other pages    → nav links navigate to / and scroll once the landing
- *                     page's sections exist (handled by ScrollToHashSection
- *                     in App.jsx) — this is a real SPA transition, never a
- *                     full page reload.
- *
- * Props
- * ─────
- * mode : 'home' | 'page'
- *   'home'  – links are in-page anchors; IntersectionObserver drives the active
- *             tab and the animated sliding underline is shown.
- *   'page'  – links navigate to the home route (client-side) then scroll;
- *             no IntersectionObserver or sliding indicator (there are no
- *             matching sections on the page itself).
- */
+import { useEffect, useRef, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { useAuth, shortenAddress } from '../context/AuthContext';
+import LoginModal from './auth/LoginModal';
 
-import { useEffect, useRef, useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import { motion } from 'framer-motion'
-
-/* ── Brand lockup ────────────────────────────────────────── */
-function BELNavBrand() {
+function Brand() {
   return (
-    <div className="flex items-center gap-3.5 py-1">
-      <img
-        src="/bel-shield.svg"
-        alt="BEL Emblem"
-        className="h-10 sm:h-14 md:h-16 w-auto object-contain flex-shrink-0 drop-shadow-sm"
-      />
-      <div className="flex flex-col justify-center min-w-0">
-        <div className="flex items-center gap-2 mb-0.5">
-          <span className="bg-[#0B1E36] text-white text-[10px] font-black px-1.5 py-0.5 rounded tracking-wider uppercase shrink-0">
-            BEL
-          </span>
-          <span className="hidden sm:inline text-[10.5px] font-bold tracking-[0.14em] text-[#A37E2C] uppercase whitespace-nowrap">
-            Govt. of India • Sovereign Ledger
-          </span>
-        </div>
-
-        <div className="text-xl sm:text-2xl md:text-3xl font-black tracking-wider leading-none">
-          <span className="text-[#0B2545]">BEL</span>
-          <span className="text-[#1565C0]">TAL</span>
-        </div>
-
-        {/* Full descriptive tagline only where there's room for it (tablet+) */}
-        <div className="hidden md:block pt-0.5 border-b-2 border-[#C59B27] w-fit">
-          <span className="text-[8.5px] font-bold tracking-wider text-slate-500 uppercase block">
-            Blockchain-Enabled Trusted Access &amp; Digital Asset Ledger &amp; ASSET PROVENANCE
-          </span>
-        </div>
+    <div className="flex items-center gap-3">
+      <img src="/bel-shield.svg" alt="BEL Emblem" className="h-10 sm:h-12 w-auto" />
+      <div className="leading-none">
+        <p className="text-xl sm:text-2xl font-black tracking-wider"><span className="text-[#0B2545]">BEL</span><span className="text-[#1565C0]">TAL</span></p>
+        <p className="hidden sm:block mt-1 text-[8px] font-bold tracking-wider uppercase text-slate-500">Blockchain-Enabled Trusted Access Ledger</p>
       </div>
     </div>
-  )
+  );
 }
 
-/* ── Main export ─────────────────────────────────────────── */
-export default function SiteHeader({ mode = 'home' }) {
-  const isHome = mode === 'home'
+function AccountMenu({ user, logout }) {
+  const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef(null);
+  const dashboardPath = {
+    ADMIN: '/admin/dashboard',
+    MANAGER: '/manager/dashboard',
+    AUDITOR: '/auditor/dashboard',
+    USER: '/user/dashboard',
+  }[user?.role] || '/user/dashboard';
 
-  const navLinks = [
-    { label: 'Platform',    id: 'platform' },
-    { label: 'Features',    id: 'features' },
-    { label: 'Technology',  id: 'technology' },
-    { label: 'Use Cases',   id: 'use-cases' },
-    { label: 'About BEL',   id: 'about-bel' },
-  ]
-
-  const [activeTab,  setActiveTab]  = useState('platform')
-  const [isMenuOpen, setIsMenuOpen] = useState(false)
-  const navigate = useNavigate()
-
-  // While true, the IntersectionObserver ignores what's scrolling past —
-  // set the instant a nav link is clicked, cleared once the resulting
-  // scroll has actually settled (debounced on the 'scroll' event itself,
-  // so it adapts to however long the scroll really takes instead of a
-  // guessed timeout). This is what stopped the sliding indicator from
-  // being yanked to whatever section flew past mid-scroll.
-  const suppressObserverRef = useRef(false)
-  const settleTimerRef = useRef(null)
-
-  const releaseObserverWhenSettled = () => {
-    const SETTLE_MS = 150
-    const onScroll = () => {
-      clearTimeout(settleTimerRef.current)
-      settleTimerRef.current = setTimeout(() => {
-        suppressObserverRef.current = false
-        window.removeEventListener('scroll', onScroll)
-      }, SETTLE_MS)
-    }
-    window.addEventListener('scroll', onScroll, { passive: true })
-    onScroll() // arm the timer immediately in case the scroll distance is ~0
-  }
-
-  useEffect(() => () => clearTimeout(settleTimerRef.current), [])
-
-  /* IntersectionObserver — auto-update active tab from visible section */
   useEffect(() => {
-    if (!isHome) return
-    const sectionIds = navLinks.map(l => l.id)
-    const observers  = []
-    const ratioMap   = {}
-
-    sectionIds.forEach(id => {
-      const el = document.getElementById(id)
-      if (!el) return
-      ratioMap[id] = 0
-
-      const obs = new IntersectionObserver(
-        ([entry]) => {
-          if (suppressObserverRef.current) return
-          ratioMap[id] = entry.intersectionRatio
-          const best = Object.entries(ratioMap).reduce(
-            (a, b) => (b[1] > a[1] ? b : a),
-            ['', 0]
-          )
-          if (best[1] > 0) setActiveTab(best[0])
-        },
-        { threshold: Array.from({ length: 21 }, (_, i) => i * 0.05) }
-      )
-      obs.observe(el)
-      observers.push(obs)
-    })
-
-    return () => observers.forEach(o => o.disconnect())
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isHome])
-
-  /* Close the mobile menu on Escape, or if the viewport grows past the md breakpoint */
-  useEffect(() => {
-    if (!isMenuOpen) return
-    const handleKeyDown = e => { if (e.key === 'Escape') setIsMenuOpen(false) }
-    const handleResize = () => { if (window.innerWidth >= 768) setIsMenuOpen(false) }
-    document.addEventListener('keydown', handleKeyDown)
-    window.addEventListener('resize', handleResize)
+    const closeOnOutsideClick = (event) => {
+      if (menuRef.current && !menuRef.current.contains(event.target)) setOpen(false);
+    };
+    const closeOnEscape = (event) => { if (event.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
     return () => {
-      document.removeEventListener('keydown', handleKeyDown)
-      window.removeEventListener('resize', handleResize)
-    }
-  }, [isMenuOpen])
+      document.removeEventListener('mousedown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, []);
 
-  const handleClick = (e, id) => {
-    e.preventDefault()
-    setIsMenuOpen(false)
-
-    if (!isHome) {
-      // SPA navigation, never a full reload — ScrollToHashSection (mounted
-      // once in App.jsx) picks up the hash once the landing page's
-      // sections actually exist and scrolls to it.
-      navigate(`/#${id}`)
-      return
-    }
-
-    suppressObserverRef.current = true
-    setActiveTab(id)
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' })
-    releaseObserverWhenSettled()
-  }
-
-  const renderLink = (label, id, extraClass) => {
-    const isActive = isHome && activeTab === id
-    return (
-      <a
-        key={id}
-        href={isHome ? `#${id}` : `/#${id}`}
-        onClick={e => handleClick(e, id)}
-        className={`relative ${extraClass} ${
-          isActive
-            ? 'text-secondary font-bold'
-            : 'text-on-surface-variant hover:text-secondary'
-        }`}
-      >
-        {label}
-        {isActive && (
-          <motion.span
-            layoutId="nav-underline"
-            className="absolute left-0 right-0 -bottom-[3px] h-[2.5px] rounded-full bg-secondary"
-            transition={{ type: 'spring', stiffness: 420, damping: 34 }}
-          />
-        )}
-      </a>
-    )
-  }
+  const go = (path) => { setOpen(false); navigate(path); };
+  const signOut = () => { setOpen(false); logout(); navigate('/'); };
 
   return (
-    <header className="sticky top-0 w-full z-40 border-b border-surface-container-highest shadow-[0_1px_8px_rgba(13,43,78,0.06)] bg-[#FFFDF5]">
-      <div className="min-h-16 md:h-20 py-2 md:py-0 max-w-7xl mx-auto px-margin flex items-center justify-between">
+    <div ref={menuRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className="flex items-center gap-2 rounded-lg bg-[#0B2545] px-3 py-2 text-xs font-bold text-white hover:bg-[#12375f]"
+      >
+        <span className="hidden sm:inline">{user?.walletAddress ? shortenAddress(user.walletAddress) : 'Officer'}</span>
+        <span className="sm:hidden material-symbols-outlined text-[18px]">account_circle</span>
+        <span className="material-symbols-outlined text-[16px]">{open ? 'expand_less' : 'expand_more'}</span>
+      </button>
 
-        {/* Brand — always links home */}
-        <Link to="/" className="flex items-center">
-          <BELNavBrand />
-        </Link>
-
-        {/* Nav links */}
-        <nav className="hidden md:flex items-center gap-space-xl h-full relative">
-          {navLinks.map(({ label, id }) =>
-            renderLink(label, id, 'transition-colors duration-200 py-space-sm font-title-md text-title-md')
-          )}
-        </nav>
-
-        {/* CTA + avatar */}
-        <div className="flex items-center gap-space-md">
-          <button
-            onClick={() => navigate('/contact')}
-            className="hidden md:inline-flex bg-secondary text-on-secondary hover:bg-primary-container font-label-md text-label-md px-space-lg py-space-sm rounded-lg transition-colors items-center shadow-sm cursor-pointer"
-          >
-            Contact Us
-          </button>
-          <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center" aria-hidden="true">
-            <span className="material-symbols-outlined text-on-primary text-[18px]">person</span>
+      {open && (
+        <div role="menu" className="absolute right-0 mt-2 w-56 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl">
+          <div className="border-b border-slate-100 px-4 py-3">
+            <p className="text-sm font-bold text-[#0B2545]">{user?.displayName || 'Officer'}</p>
+            <p className="mt-1 text-[10px] font-bold tracking-wider text-[#A37E2C]">{user?.role || 'USER'}</p>
           </div>
-
-          {/* Mobile menu toggle */}
-          <button
-            type="button"
-            className="md:hidden flex items-center justify-center w-9 h-9 rounded-lg text-primary-container hover:bg-surface-container-low transition-colors cursor-pointer"
-            aria-label={isMenuOpen ? 'Close navigation menu' : 'Open navigation menu'}
-            aria-expanded={isMenuOpen}
-            aria-controls="mobile-nav-panel"
-            onClick={() => setIsMenuOpen(open => !open)}
-          >
-            <span aria-hidden="true" className="material-symbols-outlined text-[22px]">
-              {isMenuOpen ? 'close' : 'menu'}
-            </span>
+          <button role="menuitem" onClick={() => go(dashboardPath)} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50">
+            <span className="material-symbols-outlined text-[18px]">dashboard</span> Dashboard
+          </button>
+          <button role="menuitem" onClick={() => go('/profile')} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50">
+            <span className="material-symbols-outlined text-[18px]">person</span> My Profile
+          </button>
+          <div className="my-1 border-t border-slate-100" />
+          <button role="menuitem" onClick={signOut} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-red-600 hover:bg-red-50">
+            <span className="material-symbols-outlined text-[18px]">logout</span> Logout
           </button>
         </div>
-
-      </div>
-
-      {/* Mobile nav panel */}
-      {isMenuOpen && (
-        <nav
-          id="mobile-nav-panel"
-          aria-label="Mobile navigation"
-          className="md:hidden border-t border-surface-container-highest bg-[#FFFDF5] px-margin py-space-md flex flex-col gap-1"
-        >
-          {navLinks.map(({ label, id }) => {
-            const isActive = isHome && activeTab === id
-            return (
-              <a
-                key={id}
-                href={isHome ? `#${id}` : `/#${id}`}
-                onClick={e => handleClick(e, id)}
-                className={
-                  isActive
-                    ? 'font-title-md text-title-md font-bold text-secondary py-space-sm px-space-sm rounded-lg bg-surface-container-low'
-                    : 'font-title-md text-title-md text-on-surface-variant hover:text-secondary hover:bg-surface-container-low transition-colors py-space-sm px-space-sm rounded-lg'
-                }
-              >
-                {label}
-              </a>
-            )
-          })}
-          <button
-            onClick={() => { setIsMenuOpen(false); navigate('/contact') }}
-            className="mt-space-sm bg-secondary text-on-secondary hover:bg-primary-container font-label-md text-label-md px-space-lg py-space-sm rounded-lg transition-colors flex items-center justify-center shadow-sm cursor-pointer"
-          >
-            Contact Us
-          </button>
-        </nav>
       )}
-    </header>
-  )
+    </div>
+  );
+}
+
+export default function SiteHeader({ mode = 'home' }) {
+  const { isAuthenticated, user, logout } = useAuth();
+  const navigate = useNavigate();
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const links = [
+    ['Platform', 'platform'], ['Features', 'features'], ['Technology', 'technology'],
+    ['Use Cases', 'use-cases'], ['About BEL', 'about-bel'],
+  ];
+  const goTo = (event, id) => {
+    event.preventDefault();
+    setMenuOpen(false);
+    if (mode !== 'home') navigate(`/#${id}`);
+    else document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
+  };
+  const linkClass = 'py-2 text-sm font-semibold text-slate-600 hover:text-[#1565C0] transition-colors';
+
+  return (
+    <>
+      <LoginModal isOpen={loginOpen} onClose={() => setLoginOpen(false)} />
+      <header className="sticky top-0 z-40 w-full border-b border-slate-200 bg-[#FFFDF5] shadow-sm">
+        <div className="mx-auto flex min-h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6">
+          <Link to="/" aria-label="BELTAL home"><Brand /></Link>
+          <nav className="hidden md:flex items-center gap-6">
+            {links.map(([label, id]) => <a key={id} href={mode === 'home' ? `#${id}` : `/#${id}`} onClick={(e) => goTo(e, id)} className={linkClass}>{label}</a>)}
+          </nav>
+          <div className="flex items-center gap-2">
+            {isAuthenticated ? (
+              <AccountMenu user={user} logout={logout} />
+            ) : <button onClick={() => setLoginOpen(true)} className="rounded-lg bg-[#1565C0] px-3 py-2 text-xs font-bold text-white">Connect Wallet</button>}
+            <button type="button" className="md:hidden rounded p-2 text-[#0B2545]" onClick={() => setMenuOpen((open) => !open)} aria-label="Toggle navigation">
+              <span className="material-symbols-outlined">{menuOpen ? 'close' : 'menu'}</span>
+            </button>
+          </div>
+        </div>
+        {menuOpen && <nav className="md:hidden border-t border-slate-200 px-4 py-3 flex flex-col">{links.map(([label, id]) => <a key={id} href={mode === 'home' ? `#${id}` : `/#${id}`} onClick={(e) => goTo(e, id)} className={linkClass}>{label}</a>)}</nav>}
+      </header>
+    </>
+  );
 }
