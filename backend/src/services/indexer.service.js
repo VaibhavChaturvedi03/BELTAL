@@ -93,7 +93,18 @@ export async function startIndexer() {
     return;
   }
 
-  const latestBlock = await provider.getBlockNumber().catch(() => 0);
+  // JsonRpcProvider retries indefinitely when its endpoint is unreachable.
+  // Verify connectivity before registering listeners so a bad development
+  // RPC_URL does not leave the backend producing retry noise forever.
+  try {
+    await provider.getNetwork();
+  } catch (err) {
+    logger.warn(`[Indexer] RPC endpoint unavailable; indexer disabled: ${err.message}`);
+    provider.destroy?.();
+    return;
+  }
+
+  const latestBlock = await provider.getBlockNumber();
   const fromBlock = parseInt(process.env.INDEXER_FROM_BLOCK || '0', 10) || Math.max(0, latestBlock - 500);
 
   // 1. Subscribe to AuditLog.sol (Unified Security Stream)

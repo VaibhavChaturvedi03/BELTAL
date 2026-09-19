@@ -12,4 +12,3 @@ const server = app.listen(config.port, () => {
 });
 
 export default server;
-

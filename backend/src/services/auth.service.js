@@ -68,6 +68,39 @@ export const authService = {
     // Immediately consume nonce to prevent replay attacks
     nonceService.consumeNonce(checksumAddress);
 
+    // ── Dev override: ADMIN_WALLETS env var ─────────────────────────────────
+    // A comma-separated list of checksummed wallet addresses that are always
+    // granted ADMIN role without a DB lookup. Safe for local dev when
+    // PostgreSQL is not running. Never set this in production.
+    const adminWalletsRaw = process.env.ADMIN_WALLETS ?? '';
+    const adminWallets = adminWalletsRaw
+      .split(',')
+      .map((a) => a.trim())
+      .filter(Boolean)
+      .map((a) => { try { return ethers.getAddress(a); } catch { return null; } })
+      .filter(Boolean);
+
+    if (adminWallets.includes(checksumAddress)) {
+      logger.info(`[DEV] ADMIN_WALLETS override — granting ADMIN to ${checksumAddress}`);
+      const devUser = {
+        id: null,
+        walletAddress: checksumAddress,
+        displayName: 'Administrator (Dev Override)',
+        externalId: null,
+        role: 'ADMIN',
+        clearanceLevel: 5,
+        sbu: null,
+        isRegistered: false,
+      };
+      const devToken = jwt.sign(
+        { sub: checksumAddress, walletAddress: checksumAddress, role: 'ADMIN', clearanceLevel: 5, sbu: null, isRegistered: false },
+        config.jwtSecret,
+        { expiresIn: config.jwtExpiresIn }
+      );
+      return { token: devToken, user: devUser };
+    }
+    // ── End dev override ─────────────────────────────────────────────────────
+
     // Resolve user profile from DB (or generate default authenticated session if pre-onboarded)
     let userRecord = null;
     if (prisma) {
