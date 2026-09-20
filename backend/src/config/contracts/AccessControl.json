@@ -1,6 +1,6 @@
 {
   "contractName": "AccessControl",
-  "address": "0xE1B252E8811DD52c83F6C9234D36Ca5E5FF552E7",
+  "address": "0x17a11252218f2B85AB8C2F687D4E3704608Ca89a",
   "abi": [
     {
       "type": "constructor",

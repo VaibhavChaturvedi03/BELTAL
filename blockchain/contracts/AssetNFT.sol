@@ -159,6 +159,20 @@ contract AssetNFT {
 
     /**
      * @notice Mint a new defence asset NFT with full serial number details
+     * @dev Clearance gate: the initial custodian MUST have an active identity in IdentityRegistry
+     *      with clearanceLevel >= classificationTier. Unregistered wallets (getIdentity returns a
+     *      zero-struct with isActive == false) and revoked identities are both rejected — this
+     *      closes the bypass reported in issue #98 where the gate was wrapped in `if (id.isActive)`
+     *      and therefore silently skipped for unregistered/revoked recipients.
+     *
+     *      Design decision — SBU enforcement: SBU confinement is a cross-department access policy
+     *      enforced by AccessControl.canAccessZone (with tempPassExpiry). Baking sbuCode == asset.sbu
+     *      into AssetNFT would block legitimate cross-SBU reassignments without a pass mechanism
+     *      inside this contract, so SBU gating remains at the AccessControl layer.
+     *
+     *      Design decision — Signature field: the `signature` stored in CustodyRecord is a memo /
+     *      audit-trail artefact. On-chain EIP-712 verification is deferred to a future issue;
+     *      dual-approval is currently enforced off-chain by the backend before calling this function.
      */
     function mintAssetDetailed(
         address initialCustodian,
@@ -171,15 +185,16 @@ contract AssetNFT {
         require(initialCustodian != address(0), "AssetNFT: Invalid custodian address");
         require(classificationTier >= 1 && classificationTier <= 4, "AssetNFT: Invalid classification tier");
 
-        // On-chain clearance gate check via IdentityRegistry if configured
+        // On-chain clearance gate: recipient must have an active registered identity with
+        // sufficient clearance. Unregistered wallets return isActive=false (zero-struct) and
+        // are rejected by the first require, closing the bypass from issue #98.
         if (address(identityRegistry) != address(0)) {
             IIdentityRegistry.IdentityRecord memory id = identityRegistry.getIdentity(initialCustodian);
-            if (id.isActive) {
-                require(
-                    id.clearanceLevel >= classificationTier,
-                    "AssetNFT: Custodian clearance level is insufficient for asset classification"
-                );
-            }
+            require(id.isActive, "AssetNFT: Recipient has no active identity");
+            require(
+                id.clearanceLevel >= classificationTier,
+                "AssetNFT: Recipient clearance insufficient for asset classification"
+            );
         }
 
         uint256 tokenId = _nextTokenId++;
@@ -226,6 +241,16 @@ contract AssetNFT {
 
     /**
      * @notice Transfer custody with cryptographic proof / signature
+     * @dev Clearance gate: the new custodian MUST have an active identity in IdentityRegistry
+     *      with clearanceLevel >= the asset's classificationTier. Unregistered wallets and revoked
+     *      identities are both rejected — this closes the bypass from issue #98.
+     *
+     *      Design decision — Signature: the `signature` parameter is stored in custodyHistory as a
+     *      memo / audit-trail artefact. On-chain EIP-712 verification is deferred; dual-approval
+     *      is currently enforced off-chain by the backend before invoking this function.
+     *
+     *      Design decision — SBU: SBU confinement is enforced at the AccessControl layer via
+     *      canAccessZone / tempPassExpiry, not inside this function.
      */
     function transferCustody(
         uint256 tokenId,
@@ -237,15 +262,16 @@ contract AssetNFT {
         require(newCustodian != address(0), "AssetNFT: Invalid new custodian address");
         require(newCustodian != custodians[tokenId], "AssetNFT: New custodian is already current custodian");
 
-        // Clearance-gate check on new custodian via IdentityRegistry
+        // Clearance-gate: new custodian must be an active identity with sufficient clearance.
+        // Unregistered wallets return isActive=false (zero-struct) and are rejected by the first
+        // require, closing the bypass from issue #98.
         if (address(identityRegistry) != address(0)) {
             IIdentityRegistry.IdentityRecord memory id = identityRegistry.getIdentity(newCustodian);
-            if (id.isActive) {
-                require(
-                    id.clearanceLevel >= assets[tokenId].classificationTier,
-                    "AssetNFT: New custodian clearance is insufficient for this asset"
-                );
-            }
+            require(id.isActive, "AssetNFT: Recipient has no active identity");
+            require(
+                id.clearanceLevel >= assets[tokenId].classificationTier,
+                "AssetNFT: Recipient clearance insufficient for asset classification"
+            );
         }
 
         address previousCustodian = custodians[tokenId];

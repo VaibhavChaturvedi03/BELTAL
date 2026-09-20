@@ -16,11 +16,48 @@ export const SEPOLIA_CONFIG = {
   },
 };
 
+/**
+ * Resolve a contract address from (in priority order):
+ *  1. Vite env var  — set by the developer / CI pipeline in .env
+ *  2. Artifact JSON — written automatically by blockchain/scripts/deploy.js
+ *
+ * No hardcoded fallback: if both sources are missing the app throws at startup
+ * with a clear message rather than silently pointing at a stale address.
+ */
+function resolveAddress(envVar, artifactAddress, contractName) {
+  const resolved = envVar || artifactAddress;
+  if (!resolved || resolved === '') {
+    throw new Error(
+      `[TrustChain] ${contractName} address is not configured.\n` +
+      `Set the corresponding VITE_ env var in frontend/.env, ` +
+      `or run "npm run deploy:sepolia" in the blockchain/ directory ` +
+      `to regenerate the contract artifacts.`
+    );
+  }
+  return resolved;
+}
+
 export const CONTRACT_ADDRESSES = {
-  AuditLog: import.meta.env.VITE_AUDIT_LOG_ADDRESS || AuditLogArtifact.address || '0x49F21Cbc42b7083ffD752fF0c226D5C84A65b336',
-  IdentityRegistry: import.meta.env.VITE_IDENTITY_REGISTRY_ADDRESS || IdentityRegistryArtifact.address || '0xeF758B25C8e5C5880fa0f26a36A1eA66E9D04aB4',
-  AccessControl: import.meta.env.VITE_ACCESS_CONTROL_ADDRESS || AccessControlArtifact.address || '0xE1B252E8811DD52c83F6C9234D36Ca5E5FF552E7',
-  AssetNFT: import.meta.env.VITE_CONTRACT_ADDRESS || AssetNFTArtifact.address || '0xaFCB6CEf019c4dB0B3711A809ff63a80D747FCf4',
+  AuditLog: resolveAddress(
+    import.meta.env.VITE_AUDIT_LOG_ADDRESS,
+    AuditLogArtifact.address,
+    'AuditLog'
+  ),
+  IdentityRegistry: resolveAddress(
+    import.meta.env.VITE_IDENTITY_REGISTRY_ADDRESS,
+    IdentityRegistryArtifact.address,
+    'IdentityRegistry'
+  ),
+  AccessControl: resolveAddress(
+    import.meta.env.VITE_ACCESS_CONTROL_ADDRESS,
+    AccessControlArtifact.address,
+    'AccessControl'
+  ),
+  AssetNFT: resolveAddress(
+    import.meta.env.VITE_CONTRACT_ADDRESS,
+    AssetNFTArtifact.address,
+    'AssetNFT'
+  ),
 };
 
 export const CONTRACT_ABIS = {

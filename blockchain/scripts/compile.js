@@ -48,10 +48,12 @@ if (output.errors) {
 }
 
 const contract = output.contracts['AssetNFT.sol']['AssetNFT'];
+
+// Note: deployer address and network are deployment-time concerns resolved by
+// deploy.js (which reads DEPLOYER_PRIVATE_KEY from .env and gets the network
+// from Hardhat's --network flag). The compile script only produces ABI + bytecode.
 const artifact = {
   contractName: 'AssetNFT',
-  deployerAddress: '0x334eEfB6fc223ABf74D5F00E635B63c544689E8f',
-  network: 'polygon-amoy',
   abi: contract.abi,
   bytecode: contract.evm.bytecode.object,
 };

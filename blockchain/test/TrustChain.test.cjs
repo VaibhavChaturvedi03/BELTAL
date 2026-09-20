@@ -142,7 +142,7 @@ describe('TrustChain (BELTAL) Smart Contract Security & Functional Test Suite (#
           SBU_RADAR,
           'ipfs://QmTopSecret'
         )
-      ).to.be.revertedWith('AssetNFT: Custodian clearance level is insufficient for asset classification');
+      ).to.be.revertedWith('AssetNFT: Recipient clearance insufficient for asset classification');
     });
 
     it('AssetNFT: mintAsset succeeds when custodian clearance >= classification tier', async function () {
@@ -183,7 +183,7 @@ describe('TrustChain (BELTAL) Smart Contract Security & Functional Test Suite (#
       // Attempt transfer to Level 1 user
       await expect(
         assetNFT.connect(manager).reassignCustody(tokenId, lowClearanceUser, 'HANDOVER')
-      ).to.be.revertedWith('AssetNFT: New custodian clearance is insufficient for this asset');
+      ).to.be.revertedWith('AssetNFT: Recipient clearance insufficient for asset classification');
     });
 
     it('AccessControl: canAccessZone correctly evaluates clearance and SBU', async function () {
@@ -454,6 +454,212 @@ describe('TrustChain (BELTAL) Smart Contract Security & Functional Test Suite (#
       expect(latestLog.actor).to.equal(admin.address);
       expect(latestLog.target).to.equal(employee.address);
       expect(latestLog.details).to.equal('did:beltal:AUDIT01');
+    });
+  }); // end Section 7
+
+  // =========================================================================
+  // 8. Active-Identity + Clearance Gate (Issue #98)
+  //    Verifies that unregistered wallets, revoked identities, and wallets
+  //    with insufficient clearance all revert for both mintAsset and
+  //    transferCustody. Closes the bypass where `if (id.isActive)` was
+  //    skipped for zero-struct returns from getIdentity().
+  // =========================================================================
+  describe('8. Active-Identity + Clearance Gate (Issue #98)', function () {
+    // A Tier-3 asset is used for all tests in this section
+    const TIER = 3;
+    const ASSET_TAG = 'BEL-RADAR-GATE-TEST';
+    const TOKEN_URI = 'ipfs://QmGateTest';
+    let tokenId;
+
+    beforeEach(async function () {
+      // Register a valid Level-3 holder so we can mint a Tier-3 asset for transfer tests
+      await identityRegistry.registerIdentity(
+        employee.address,
+        'did:beltal:GATE-HOLDER',
+        ethers.keccak256(ethers.toUtf8Bytes('GATE-HOLDER')),
+        TIER,
+        SBU_RADAR
+      );
+      const tx = await assetNFT.connect(manager).mintAsset(
+        employee.address,
+        ASSET_TAG,
+        TIER,
+        SBU_RADAR,
+        TOKEN_URI
+      );
+      await tx.wait();
+      tokenId = 1001;
+    });
+
+    // -----------------------------------------------------------------------
+    // 8.1  mintAsset — revert cases
+    // -----------------------------------------------------------------------
+    it('mintAsset: reverts for unregistered wallet (no identity record)', async function () {
+      // systemConnector.address has no identity registered in this suite
+      await expect(
+        assetNFT.connect(manager).mintAsset(
+          systemConnector.address,
+          'BEL-UNREG',
+          TIER,
+          SBU_RADAR,
+          'ipfs://QmUnreg'
+        )
+      ).to.be.revertedWith('AssetNFT: Recipient has no active identity');
+    });
+
+    it('mintAsset: reverts for revoked identity', async function () {
+      // Register then revoke unauthorizedUser
+      await identityRegistry.registerIdentity(
+        unauthorizedUser.address,
+        'did:beltal:REVOKED-MINT',
+        ethers.keccak256(ethers.toUtf8Bytes('REVOKED-MINT')),
+        TIER,
+        SBU_RADAR
+      );
+      await identityRegistry.revokeIdentity(unauthorizedUser.address, 'Security quarantine');
+
+      await expect(
+        assetNFT.connect(manager).mintAsset(
+          unauthorizedUser.address,
+          'BEL-REVOKED',
+          TIER,
+          SBU_RADAR,
+          'ipfs://QmRevoked'
+        )
+      ).to.be.revertedWith('AssetNFT: Recipient has no active identity');
+    });
+
+    it('mintAsset: reverts for active identity with insufficient clearance', async function () {
+      // Register unauthorizedUser with Level 1 (below TIER 3 required)
+      await identityRegistry.registerIdentity(
+        unauthorizedUser.address,
+        'did:beltal:LOW-MINT',
+        ethers.keccak256(ethers.toUtf8Bytes('LOW-MINT')),
+        1, // Level 1 — insufficient for Tier 3
+        SBU_RADAR
+      );
+
+      await expect(
+        assetNFT.connect(manager).mintAsset(
+          unauthorizedUser.address,
+          'BEL-LOWCLEAR',
+          TIER,
+          SBU_RADAR,
+          'ipfs://QmLowClear'
+        )
+      ).to.be.revertedWith('AssetNFT: Recipient clearance insufficient for asset classification');
+    });
+
+    // -----------------------------------------------------------------------
+    // 8.2  transferCustody — revert cases
+    // -----------------------------------------------------------------------
+    it('transferCustody: reverts for unregistered wallet (no identity record)', async function () {
+      // systemConnector.address has no identity registered in this suite
+      await expect(
+        assetNFT.connect(manager).transferCustody(
+          tokenId,
+          systemConnector.address,
+          'HANDOVER-UNREG',
+          '0x'
+        )
+      ).to.be.revertedWith('AssetNFT: Recipient has no active identity');
+    });
+
+    it('transferCustody: reverts for revoked identity', async function () {
+      await identityRegistry.registerIdentity(
+        unauthorizedUser.address,
+        'did:beltal:REVOKED-XFER',
+        ethers.keccak256(ethers.toUtf8Bytes('REVOKED-XFER')),
+        TIER,
+        SBU_RADAR
+      );
+      await identityRegistry.revokeIdentity(unauthorizedUser.address, 'Revoked before transfer');
+
+      await expect(
+        assetNFT.connect(manager).transferCustody(
+          tokenId,
+          unauthorizedUser.address,
+          'HANDOVER-REVOKED',
+          '0x'
+        )
+      ).to.be.revertedWith('AssetNFT: Recipient has no active identity');
+    });
+
+    it('transferCustody: reverts for active identity with insufficient clearance', async function () {
+      await identityRegistry.registerIdentity(
+        unauthorizedUser.address,
+        'did:beltal:LOW-XFER',
+        ethers.keccak256(ethers.toUtf8Bytes('LOW-XFER')),
+        1, // Level 1 — insufficient for Tier 3
+        SBU_RADAR
+      );
+
+      await expect(
+        assetNFT.connect(manager).transferCustody(
+          tokenId,
+          unauthorizedUser.address,
+          'HANDOVER-LOWCLEAR',
+          '0x'
+        )
+      ).to.be.revertedWith('AssetNFT: Recipient clearance insufficient for asset classification');
+    });
+
+    // -----------------------------------------------------------------------
+    // 8.3  Success paths
+    // -----------------------------------------------------------------------
+    it('mintAsset: succeeds for active identity with exact clearance match (clearance == tier)', async function () {
+      // unauthorizedUser gets exactly Level 3
+      await identityRegistry.registerIdentity(
+        unauthorizedUser.address,
+        'did:beltal:EXACT-MINT',
+        ethers.keccak256(ethers.toUtf8Bytes('EXACT-MINT')),
+        TIER,
+        SBU_RADAR
+      );
+
+      await expect(
+        assetNFT.connect(manager).mintAsset(
+          unauthorizedUser.address,
+          'BEL-EXACT-L3',
+          TIER,
+          SBU_RADAR,
+          'ipfs://QmExact'
+        )
+      ).to.emit(assetNFT, 'AssetMinted');
+    });
+
+    it('transferCustody: succeeds for active identity with sufficient clearance', async function () {
+      // Register a Level-3 recipient
+      await identityRegistry.registerIdentity(
+        unauthorizedUser.address,
+        'did:beltal:VALID-XFER',
+        ethers.keccak256(ethers.toUtf8Bytes('VALID-XFER')),
+        TIER,
+        SBU_RADAR
+      );
+
+      const tx = await assetNFT.connect(manager).transferCustody(
+        tokenId,
+        unauthorizedUser.address,
+        'HANDOVER-VALID',
+        '0x'
+      );
+
+      // Verify the event fired with the correct token, addresses, and reason
+      await expect(tx)
+        .to.emit(assetNFT, 'CustodyReassigned')
+        .withArgs(
+          tokenId,
+          employee.address,
+          unauthorizedUser.address,
+          'HANDOVER-VALID',
+          (await tx.wait()).logs
+            .find(l => l.fragment && l.fragment.name === 'CustodyReassigned')
+            .args[4] // timestamp from the actual emitted event
+        );
+
+      // Also verify on-chain custodian state was updated
+      expect(await assetNFT.getCustodian(tokenId)).to.equal(unauthorizedUser.address);
     });
   });
 });
