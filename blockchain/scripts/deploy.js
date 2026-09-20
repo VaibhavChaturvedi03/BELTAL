@@ -98,10 +98,16 @@ async function main() {
   };
 
   // 7. Save Deployment Manifest
+  // Fetch the block number at which the final contract (AssetNFT) was deployed
+  // so the backend indexer can use it as INDEXER_FROM_BLOCK for fresh backfill.
+  const deploymentReceipt = await hre.ethers.provider.getTransactionReceipt(assetNFT.deploymentTransaction().hash);
+  const deploymentBlock = deploymentReceipt ? Number(deploymentReceipt.blockNumber) : null;
+
   const deploymentManifest = {
     network,
     chainId: Number(chainId),
     deployedAt: new Date().toISOString(),
+    deploymentBlock,
     deployer: deployer.address,
     contracts: {
       AuditLog: {
@@ -130,6 +136,7 @@ async function main() {
     JSON.stringify(deploymentManifest, null, 2)
   );
   console.log(`Saved deployment manifest to: blockchain/deployments/${network}.json`);
+
 
   // 8. Synchronize Contract Artifacts to Backend and Frontend
   const backendContractsDir = path.join(__dirname, '../../backend/src/config/contracts');
