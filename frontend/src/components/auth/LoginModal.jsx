@@ -11,9 +11,11 @@
  * onClose  : () => void — called when modal is dismissed
  */
 
-import { useEffect, useCallback, useState } from 'react';
-import { useAuth } from '../../context/AuthContext';
+import { useEffect, useCallback, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth, roleHomePath } from '../../context/AuthContext';
 import { shortenAddress } from '../../context/AuthContext';
+import { useToast } from '../ui/Toast';
 
 /* ── Step config ────────────────────────────────────────────── */
 const STEPS = [
@@ -176,18 +178,34 @@ function StepIndicator({ connectStep }) {
 export default function LoginModal({ isOpen, onClose }) {
   const { connectWallet, connectStep, connectError, resetConnect, user, isAuthenticated } =
     useAuth();
-  const [portalPreference, setPortalPreference] = useState('USER');
+  const navigate = useNavigate();
+  const toast = useToast();
+  const [portalPreference, setPortalPreference] = useState(null);
 
-  /* Auto-close after successful auth */
+  /* Where to go after sign-in. The role assigned by the server decides —
+     the portal picked above is only a preference and is never trusted. */
+  const destination = useMemo(() => {
+    if (!user) return null;
+    if (!user.isRegistered) return { path: '/register', notice: null };
+    const notice =
+      portalPreference && portalPreference !== user.role
+        ? `You chose the ${portalPreference} portal, but your wallet is registered as ${user.role} — opening the ${user.role} portal.`
+        : null;
+    return { path: roleHomePath(user.role) ?? '/', notice };
+  }, [user, portalPreference]);
+
+  /* Auto-close after successful auth, then open the portal for the real role */
   useEffect(() => {
-    if (connectStep === 'done' && isAuthenticated) {
+    if (connectStep === 'done' && isAuthenticated && destination) {
       const t = setTimeout(() => {
         onClose();
         resetConnect();
-      }, 1200);
+        if (destination.notice) toast.info(destination.notice, 'Portal');
+        navigate(destination.path);
+      }, destination.notice ? 2600 : 1200);
       return () => clearTimeout(t);
     }
-  }, [connectStep, isAuthenticated, onClose, resetConnect]);
+  }, [connectStep, isAuthenticated, destination, onClose, resetConnect, navigate, toast]);
 
   /* Escape key closes modal (only when idle or error) */
   useEffect(() => {
@@ -342,13 +360,14 @@ export default function LoginModal({ isOpen, onClose }) {
                 <StepIndicator connectStep="idle" />
 
                 <fieldset className="mb-5">
-                  <legend className="mb-2 text-[11px] font-bold tracking-widest text-slate-500 uppercase">Open preferred portal</legend>
+                  <legend className="mb-2 text-[11px] font-bold tracking-widest text-slate-500 uppercase">Open preferred portal (optional)</legend>
                   <div className="grid grid-cols-2 gap-2">
                     {['USER', 'MANAGER', 'AUDITOR', 'ADMIN'].map((role) => (
                       <button
                         key={role}
                         type="button"
-                        onClick={() => setPortalPreference(role)}
+                        aria-pressed={portalPreference === role}
+                        onClick={() => setPortalPreference((current) => (current === role ? null : role))}
                         className={`rounded-lg border px-3 py-2 text-left text-[12px] font-bold transition-colors ${portalPreference === role ? 'border-[#1E5FA8] bg-[#1E5FA8]/20 text-[#7ab0fe]' : 'border-[#1E2E48] bg-[#060D1A] text-slate-400 hover:border-slate-500'}`}
                       >
                         {role}
@@ -438,9 +457,12 @@ export default function LoginModal({ isOpen, onClose }) {
                       {shortenAddress(user.walletAddress)}
                     </code>
                     <span className="text-[9px] font-bold text-emerald-400 uppercase tracking-wider bg-emerald-900/30 border border-emerald-800/40 px-1.5 py-0.5 rounded">
-                      {user.role}
+                      {user.role ?? 'UNREGISTERED'}
                     </span>
                   </div>
+                )}
+                {destination?.notice && (
+                  <p role="status" className="mt-3 text-[12px] font-semibold text-[#7ab0fe]">{destination.notice}</p>
                 )}
               </div>
             )}

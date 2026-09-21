@@ -1,43 +1,41 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { assetApi, adminApi, transferApi } from '../../services/api';
+import { useTransaction } from '../../context/TransactionContext';
+import { assetApi, transferApi } from '../../services/api';
+import useTeamMembers from '../../hooks/useTeamMembers';
 import Card, { CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 
 export default function InitiateTransfer() {
     const { user } = useAuth();
+    const sbu = user?.sbu;
+    const { showSuccess, showError } = useTransaction();
     const navigate = useNavigate();
     const [loading, setLoading] = useState(false);
     const [assets, setAssets] = useState([]);
-    const [teamMembers, setTeamMembers] = useState([]);
+    const [loadError, setLoadError] = useState(null);
+    const { members: teamMembers, error: membersError } = useTeamMembers(sbu);
     const [formData, setFormData] = useState({
         assetId: '',
         toUserId: '',
         reason: '',
     });
 
-    useEffect(() => {
-        if (user?.sbu) {
-            fetchData();
-        }
-    }, [user]);
-
-    const fetchData = async () => {
+    const fetchAssets = useCallback(async () => {
+        if (!sbu) return;
+        setLoadError(null);
         try {
-            // Fetch team assets
-            const assetsData = await assetApi.list({ sbu: user.sbu, limit: 100 });
-            setAssets(assetsData.assets || []);
-
-            // Fetch team members (exclude current user)
-            const membersData = await adminApi.listIdentities({ sbu: user.sbu, limit: 100 });
-            const filteredMembers = (membersData.users || []).filter(
-                (m) => m.id !== user.id
-            );
-            setTeamMembers(filteredMembers);
+            const assetsData = await assetApi.list({ sbu, limit: 100 });
+            setAssets(Array.isArray(assetsData) ? assetsData : []);
         } catch (err) {
-            console.error("Failed to fetch data", err);
+            console.error("Failed to fetch assets", err);
+            setLoadError(err.uiMessage || 'Team assets could not be loaded.');
         }
-    };
+    }, [sbu]);
+
+    useEffect(() => {
+        fetchAssets();
+    }, [fetchAssets]);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -50,11 +48,11 @@ export default function InitiateTransfer() {
                 reason: formData.reason || 'Manager-initiated transfer',
             });
 
-            alert('Transfer request submitted successfully!');
+            showSuccess('Transfer request submitted successfully!');
             navigate('/transfers'); // Redirect to pending transfers page
         } catch (err) {
             console.error("Failed to create transfer", err);
-            alert(`Failed to create transfer: ${err.uiMessage || err.message}`);
+            showError(`Failed to create transfer: ${err.uiMessage || err.message}`);
         } finally {
             setLoading(false);
         }
@@ -84,12 +82,19 @@ export default function InitiateTransfer() {
                 </CardHeader>
                 <CardContent>
                     <form onSubmit={handleSubmit} className="space-y-6">
+                        {(loadError || membersError) && (
+                            <div className="rounded-lg border border-red-500/40 p-4 text-sm text-red-400" role="alert">
+                                {loadError || membersError}
+                            </div>
+                        )}
+
                         {/* Select Asset */}
                         <div>
-                            <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                            <label htmlFor="transfer-asset" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                                 Select Asset to Transfer *
                             </label>
                             <select
+                                id="transfer-asset"
                                 required
                                 value={formData.assetId}
                                 onChange={(e) => setFormData({ ...formData, assetId: e.target.value })}
@@ -131,10 +136,11 @@ export default function InitiateTransfer() {
 
                         {/* Select New Custodian */}
                         <div>
-                            <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                            <label htmlFor="transfer-recipient" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                                 Transfer To (New Custodian) *
                             </label>
                             <select
+                                id="transfer-recipient"
                                 required
                                 value={formData.toUserId}
                                 onChange={(e) => setFormData({ ...formData, toUserId: e.target.value })}
@@ -173,7 +179,7 @@ export default function InitiateTransfer() {
                                 </div>
                                 {selectedMember.clearanceLevel < (selectedAsset?.classificationTier || 0) && (
                                     <div className="mt-3 p-3 rounded bg-amber-900/30 border border-amber-600/50">
-                                        <p className="text-amber-400 text-xs font-bold">️ Warning</p>
+                                        <p className="text-amber-400 text-xs font-bold">Warning</p>
                                         <p className="text-amber-300/80 text-xs mt-1">
                                             The selected custodian's clearance level ({selectedMember.clearanceLevel}) is lower than
                                             the asset's classification tier ({selectedAsset?.classificationTier}).
@@ -186,10 +192,11 @@ export default function InitiateTransfer() {
 
                         {/* Reason */}
                         <div>
-                            <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                            <label htmlFor="transfer-reason" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                                 Reason for Transfer
                             </label>
                             <textarea
+                                id="transfer-reason"
                                 value={formData.reason}
                                 onChange={(e) => setFormData({ ...formData, reason: e.target.value })}
                                 placeholder="Enter reason for this transfer (optional)"

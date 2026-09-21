@@ -19,7 +19,7 @@ export const web3Service = {
     await this.switchToSepolia();
 
     const provider = new ethers.BrowserProvider(eth);
-    const accounts = await provider.send('eth_requestAccounts', []);
+    await provider.send('eth_requestAccounts', []);
     const signer = await provider.getSigner();
     const address = await signer.getAddress();
 
@@ -59,6 +59,21 @@ export const web3Service = {
   async signMessage(message) {
     const { signer } = await this.connectWallet();
     return await signer.signMessage(message);
+  },
+
+  /**
+   * Live head block from the configured RPC. Used for the network indicator in
+   * the app chrome — the number shown has to be a real one an auditor could
+   * check on Etherscan, not decoration. Returns null if the RPC is unreachable
+   * so the caller can show "offline" rather than a stale or invented figure.
+   */
+  async getBlockNumber() {
+    try {
+      const provider = new ethers.JsonRpcProvider(SEPOLIA_CONFIG.rpcUrl);
+      return await provider.getBlockNumber();
+    } catch {
+      return null;
+    }
   },
 
   getReadOnlyContract() {

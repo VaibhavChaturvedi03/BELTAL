@@ -1253,3 +1253,78 @@ body {
   .auth-idle-content > button { margin-bottom: 1.25rem !important; }
   .auth-idle-content > p { margin-top: 0; }
 }
+
+/* ─────────────────────────────────────────────────────────────
+   Motion helpers shared by the admin consoles and dialogs.
+   Everything here is switched off for people who ask for reduced motion.
+   ───────────────────────────────────────────────────────────── */
+@keyframes ui-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes ui-pop { from { opacity: 0; transform: translateY(8px) scale(.97); } to { opacity: 1; transform: none; } }
+@keyframes ui-rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.ui-fade-in { animation: ui-fade .18s ease-out both; }
+.ui-pop-in { animation: ui-pop .22s cubic-bezier(.2, .8, .2, 1) both; }
+.ui-stagger > * { animation: ui-rise .38s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--i, 0) * 45ms); }
+
+/* ─────────────────────────────────────────────────────────────
+   Public API reference (/docs)
+   ───────────────────────────────────────────────────────────── */
+@keyframes docs-drift { to { transform: translate3d(48px, -28px, 0) scale(1.18); } }
+@keyframes docs-grid-pan { to { background-position: 44px 44px; } }
+@keyframes docs-pulse-ring { 0% { box-shadow: 0 0 0 0 rgba(232, 204, 113, .55); } 100% { box-shadow: 0 0 0 10px rgba(232, 204, 113, 0); } }
+@keyframes docs-sheen { from { transform: translateX(-120%); } to { transform: translateX(220%); } }
+
+.docs-hero { position: relative; isolation: isolate; overflow: hidden; }
+.docs-hero::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, .06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .06) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(ellipse at 30% 40%, #000 20%, transparent 75%);
+  mask-image: radial-gradient(ellipse at 30% 40%, #000 20%, transparent 75%);
+  animation: docs-grid-pan 14s linear infinite;
+}
+.docs-blob { position: absolute; z-index: -1; border-radius: 9999px; filter: blur(64px); pointer-events: none; animation: docs-drift 16s ease-in-out infinite alternate; }
+.docs-hero-item { animation: ui-rise .7s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--i, 0) * 110ms + 60ms); }
+.docs-live-dot { animation: docs-pulse-ring 1.8s ease-out infinite; }
+
+.docs-reveal { opacity: 0; transform: translateY(20px); transition: opacity .6s ease, transform .6s cubic-bezier(.2, .8, .2, 1); transition-delay: var(--d, 0ms); }
+.docs-reveal.is-visible { opacity: 1; transform: none; }
+
+.docs-card { transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease; }
+.docs-card:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(11, 37, 69, .10); border-color: #B9D0EE; }
+
+.docs-endpoint { position: relative; transition: box-shadow .25s ease, border-color .25s ease; }
+.docs-endpoint:hover { box-shadow: 0 8px 22px rgba(11, 37, 69, .09); }
+.docs-endpoint[data-open='true'] { border-color: #B9D0EE; box-shadow: 0 10px 26px rgba(11, 37, 69, .10); }
+.docs-endpoint::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent, #1565C0); transform: scaleY(.35); transform-origin: center; opacity: .55; transition: transform .3s ease, opacity .3s ease; }
+.docs-endpoint:hover::before, .docs-endpoint[data-open='true']::before { transform: scaleY(1); opacity: 1; }
+
+.docs-collapse { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .32s cubic-bezier(.3, .7, .2, 1); }
+.docs-collapse[data-open='true'] { grid-template-rows: 1fr; }
+.docs-collapse > div { min-height: 0; overflow: hidden; }
+.docs-chevron { transition: transform .3s cubic-bezier(.3, .7, .2, 1); }
+.docs-endpoint[data-open='true'] .docs-chevron { transform: rotate(180deg); }
+
+.docs-nav-link { position: relative; transition: background-color .2s ease, color .2s ease, transform .2s ease; }
+.docs-nav-link:hover { transform: translateX(2px); }
+.docs-nav-link[aria-current='true']::before { content: ''; position: absolute; left: -8px; top: 22%; bottom: 22%; width: 3px; border-radius: 3px; background: #D4AF37; animation: ui-fade .25s ease-out both; }
+
+.docs-progress { position: fixed; inset: 0 0 auto 0; z-index: 60; height: 3px; pointer-events: none; background: linear-gradient(90deg, #1565C0, #D4AF37); transform-origin: left; transform: scaleX(var(--p, 0)); }
+.docs-top { transition: opacity .25s ease, transform .25s ease; }
+.docs-top[data-show='false'] { opacity: 0; transform: translateY(12px); pointer-events: none; }
+
+.docs-code-sheen { position: relative; overflow: hidden; }
+.docs-code-sheen::after { content: ''; position: absolute; inset: 0 auto 0 0; width: 35%; background: linear-gradient(100deg, transparent, rgba(255, 255, 255, .07), transparent); transform: translateX(-120%); pointer-events: none; }
+.docs-code-sheen:hover::after { animation: docs-sheen .9s ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-fade-in, .ui-pop-in, .ui-stagger > *, .docs-hero-item, .docs-blob, .docs-live-dot, .docs-hero::before, .docs-code-sheen:hover::after,
+  .docs-nav-link[aria-current='true']::before { animation: none !important; }
+  .docs-reveal { opacity: 1; transform: none; transition: none; }
+  .docs-card, .docs-endpoint, .docs-endpoint::before, .docs-collapse, .docs-chevron, .docs-nav-link, .docs-top { transition: none; }
+  .docs-card:hover, .docs-nav-link:hover { transform: none; }
+}

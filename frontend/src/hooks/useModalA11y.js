@@ -16,6 +16,13 @@ const FOCUSABLE_SELECTOR =
 export default function useModalA11y(onClose) {
   const dialogRef = useRef(null)
   const previouslyFocusedRef = useRef(null)
+  const onCloseRef = useRef(onClose)
+
+  // Callers often pass an inline handler; reading it through a ref keeps the
+  // effect below from re-running (and re-stealing focus) on every render.
+  useEffect(() => {
+    onCloseRef.current = onClose
+  }, [onClose])
 
   useEffect(() => {
     previouslyFocusedRef.current = document.activeElement
@@ -32,7 +39,7 @@ export default function useModalA11y(onClose) {
 
     const handleKeyDown = e => {
       if (e.key === 'Escape') {
-        onClose()
+        onCloseRef.current()
         return
       }
       if (e.key !== 'Tab' || !dialogRef.current) return
@@ -61,7 +68,7 @@ export default function useModalA11y(onClose) {
         previouslyFocusedRef.current.focus()
       }
     }
-  }, [onClose])
+  }, [])
 
   return dialogRef
 }

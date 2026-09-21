@@ -1,41 +1,40 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { useAuth } from '../../context/AuthContext';
 import { assetApi } from '../../services/api';
 import Card, { CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
+import { TierBadge } from '../../components/ui/Badge';
 
 export default function MyAssets() {
-    const { user } = useAuth();
-    const [assets, setAssets] = useState([]);
+    const [allAssets, setAllAssets] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
     const [search, setSearch] = useState('');
 
-    useEffect(() => {
-        if (user?.walletAddress) {
-            fetchAssets();
-        }
-    }, [user]);
-
-    const fetchAssets = async () => {
+    const fetchAssets = useCallback(async () => {
         setLoading(true);
+        setError(null);
         try {
-            const data = await assetApi.list({
-                owner: user.walletAddress,
-                search: search,
-                limit: 100
-            });
-            setAssets(data.assets || []);
+            const data = await assetApi.listMine();
+            setAllAssets(Array.isArray(data) ? data : []);
         } catch (err) {
             console.error("Failed to fetch assets", err);
+            setError(err.uiMessage || 'Your assets could not be loaded.');
         } finally {
             setLoading(false);
         }
-    };
+    }, []);
 
     useEffect(() => {
-        const timer = setTimeout(() => fetchAssets(), 300);
-        return () => clearTimeout(timer);
-    }, [search]);
+        fetchAssets();
+    }, [fetchAssets]);
+
+    // The custody list is already scoped to the caller, so search runs locally.
+    const query = search.trim().toLowerCase();
+    const assets = query
+        ? allAssets.filter((asset) =>
+            (asset.name || '').toLowerCase().includes(query) ||
+            (asset.tokenId || '').toLowerCase().includes(query))
+        : allAssets;
 
     const getStatusColor = (status) => {
         switch (status?.toUpperCase()) {
@@ -66,12 +65,13 @@ export default function MyAssets() {
             <Card goldAccent={false}>
                 <CardContent>
                     <div className="relative">
-                        <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-[20px]">
+                        <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-[20px]" aria-hidden="true">
                             search
                         </span>
                         <input
                             type="text"
-                            placeholder="Search by asset name or type..."
+                            aria-label="Search my assets"
+                            placeholder="Search by asset name or token ID..."
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
                             className="w-full bg-[#0D1F38] border border-[#1F293D] rounded pl-10 pr-4 py-2.5 text-sm text-white focus:border-emerald-500 outline-none"
@@ -79,6 +79,14 @@ export default function MyAssets() {
                     </div>
                 </CardContent>
             </Card>
+
+            {error && (
+                <div className="rounded-lg border border-red-500/40 p-4 text-sm text-red-400" role="alert">
+                    <p className="font-bold">Unable to load your assets</p>
+                    <p className="mt-1 text-xs">{error}</p>
+                    <button type="button" onClick={fetchAssets} className="mt-3 text-xs font-bold underline">Retry</button>
+                </div>
+            )}
 
             {/* Assets Grid */}
             {loading ? (
@@ -93,8 +101,8 @@ export default function MyAssets() {
                             <span className="material-symbols-outlined text-6xl text-slate-600 mb-3">
                                 inventory_2
                             </span>
-                            <p className="text-slate-400 text-sm">You don't have any assets yet</p>
-                            <p className="text-slate-500 text-xs mt-1">Assets will appear here once assigned to you</p>
+                            <p className="text-slate-400 text-sm">{query ? 'No assets match your search' : "You don't have any assets yet"}</p>
+                            <p className="text-slate-500 text-xs mt-1">{query ? 'Try a different name or token ID' : 'Assets will appear here once assigned to you'}</p>
                         </div>
                     </CardContent>
                 </Card>
@@ -103,7 +111,7 @@ export default function MyAssets() {
                     {assets.map((asset) => (
                         <Link
                             key={asset.id}
-                            to={`/user/assets/${asset.id}`}
+                            to={`/assets/${asset.id}`}
                             className="group"
                         >
                             <Card goldAccent={false} className="h-full hover:border-emerald-500/50 transition-all">
@@ -125,14 +133,12 @@ export default function MyAssets() {
                                 <CardContent>
                                     <div className="space-y-2">
                                         <div className="flex items-center justify-between text-xs">
-                                            <span className="text-slate-500">Type</span>
-                                            <span className="text-white font-medium">{asset.assetType || 'N/A'}</span>
+                                            <span className="text-slate-500">SBU</span>
+                                            <span className="text-white font-medium">{asset.sbu?.replace('SBU_', '') || 'N/A'}</span>
                                         </div>
                                         <div className="flex items-center justify-between text-xs">
                                             <span className="text-slate-500">Classification</span>
-                                            <span className="px-2 py-0.5 rounded bg-[#1E3E62] text-[#7ab0fe] text-[10px] font-bold">
-                                                Tier {asset.classificationTier}
-                                            </span>
+                                            <TierBadge tier={asset.classificationTier} />
                                         </div>
                                         <div className="flex items-center justify-between text-xs">
                                             <span className="text-slate-500">Minted On</span>

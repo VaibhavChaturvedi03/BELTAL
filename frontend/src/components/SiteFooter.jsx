@@ -16,6 +16,7 @@ const FOOTER_COLUMNS = [
       { label: 'Features', href: '/#features' },
       { label: 'Technology', href: '/#technology' },
       { label: 'Use Cases', href: '/#use-cases' },
+      { label: 'API Documentation', href: '/docs' },
     ],
   },
   {

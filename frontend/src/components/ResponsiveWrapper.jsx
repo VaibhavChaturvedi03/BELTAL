@@ -26,7 +26,7 @@ export function useResponsive() {
 }
 
 export function ResponsiveWrapper({ children, className = '' }) {
-    const { isMobile, isTablet, isDesktop } = useResponsive();
+    const { isMobile, isTablet } = useResponsive();
 
     return (
         <div className={`

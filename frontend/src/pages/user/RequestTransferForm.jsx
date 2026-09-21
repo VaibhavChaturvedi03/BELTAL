@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useTransaction } from '../../context/TransactionContext';
@@ -34,13 +34,7 @@ export default function RequestTransferForm() {
     reason: { minLength: 5, label: 'Reason' }, // Optional, but validates if length < 5
   };
 
-  useEffect(() => {
-    if (user?.walletAddress) {
-      loadData();
-    }
-  }, [user]);
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoadProblem('');
     const [assetsResult, recipientsResult] = await Promise.allSettled([
       assetApi.listMine(),
@@ -64,7 +58,13 @@ export default function RequestTransferForm() {
     if (assetsResult.status === 'rejected' || recipientsResult.status === 'rejected') {
       setLoadProblem('Some transfer options are temporarily unavailable. Please refresh in a moment or contact your administrator.');
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (user?.walletAddress) {
+      loadData();
+    }
+  }, [user?.walletAddress, loadData]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -133,10 +133,11 @@ export default function RequestTransferForm() {
 
             {/* Asset Selection */}
             <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+              <label htmlFor="request-asset" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                 Select Asset to Transfer *
               </label>
               <select
+                id="request-asset"
                 required
                 value={formData.assetId}
                 onChange={(e) => {
@@ -194,10 +195,11 @@ export default function RequestTransferForm() {
 
             {/* Recipient Selection */}
             <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+              <label htmlFor="request-recipient" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                 Transfer To (Recipient) *
               </label>
               <select
+                id="request-recipient"
                 required
                 value={formData.toUserId}
                 onChange={(e) => {
@@ -210,7 +212,7 @@ export default function RequestTransferForm() {
                 <option value="">-- Select Recipient --</option>
                 {identities.map((identity) => (
                   <option key={identity.id} value={identity.id}>
-                    {identity.displayName || 'Unknown'} ({identity.role}) - Level {identity.clearanceLevel}
+                    {identity.displayName || 'Unknown'}{identity.role ? ` (${identity.role})` : ''} - Level {identity.clearanceLevel}
                   </option>
                 ))}
               </select>
@@ -231,10 +233,12 @@ export default function RequestTransferForm() {
                     <span className="text-slate-500">Name:</span>
                     <span className="text-white ml-2 font-medium">{selectedRecipient.displayName || 'Unknown'}</span>
                   </div>
-                  <div>
-                    <span className="text-slate-500">Role:</span>
-                    <span className="text-white ml-2 font-medium">{selectedRecipient.role}</span>
-                  </div>
+                  {selectedRecipient.role && (
+                    <div>
+                      <span className="text-slate-500">Role:</span>
+                      <span className="text-white ml-2 font-medium">{selectedRecipient.role}</span>
+                    </div>
+                  )}
                   <div>
                     <span className="text-slate-500">Clearance:</span>
                     <span className="text-white ml-2 font-medium">Level {selectedRecipient.clearanceLevel}</span>
@@ -243,12 +247,14 @@ export default function RequestTransferForm() {
                     <span className="text-slate-500">SBU:</span>
                     <span className="text-white ml-2 font-medium">{selectedRecipient.sbu?.replace('SBU_', '') || 'N/A'}</span>
                   </div>
-                  <div className="col-span-1 sm:col-span-2">
-                    <span className="text-slate-500">Wallet:</span>
-                    <div className="text-slate-400 font-mono text-[10px] mt-0.5 break-all">
-                      {selectedRecipient.walletAddress}
+                  {selectedRecipient.walletAddress && (
+                    <div className="col-span-1 sm:col-span-2">
+                      <span className="text-slate-500">Wallet:</span>
+                      <div className="text-slate-400 font-mono text-[10px] mt-0.5 break-all">
+                        {selectedRecipient.walletAddress}
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
 
                 {selectedAsset && selectedRecipient.clearanceLevel < (selectedAsset.classificationTier || 0) && (
@@ -269,10 +275,11 @@ export default function RequestTransferForm() {
 
             {/* Reason Textarea */}
             <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+              <label htmlFor="request-reason" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                 Reason for Transfer
               </label>
               <textarea
+                id="request-reason"
                 value={formData.reason}
                 onChange={(e) => {
                   setFormData({ ...formData, reason: e.target.value });

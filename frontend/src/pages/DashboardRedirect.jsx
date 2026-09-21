@@ -16,6 +16,8 @@ export default function DashboardRedirect() {
         );
     }
 
+    if (user && !user.isRegistered) return <Navigate to="/register" replace />;
+
     const role = user?.role?.toUpperCase();
 
     // Role-based redirect
