@@ -22,6 +22,17 @@ const apiLimiter = rateLimit({
   max: 100,
   standardHeaders: true,
   legacyHeaders: false,
+  // Machine badge ingest has its own, higher limit (machineRateLimit.js); the
+  // human limit would otherwise cap a PACS gateway at ~7 events a minute.
+  // The polled read-only PACS console endpoints (zones/events) likewise use
+  // their own per-minute limiter in pacs.route.js.
+  skip: (req) =>
+    (req.method === 'POST' && req.path === '/pacs/badge-event') ||
+    (req.method === 'GET' && (req.path === '/pacs/zones' || req.path === '/pacs/events')) ||
+    // The waiting page polls this every ~10s; it has its own per-IP limiter in
+    // registrationRateLimit.js so it can't exhaust the general budget.
+    (req.method === 'GET' && req.path === '/auth/registration-status'),
+  message: { error: { message: 'Too many requests, please try again later.', status: 429 } },
 });
 
 app.use('/api', apiLimiter, routes);

@@ -2,9 +2,9 @@ import { ethers } from 'ethers';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import prisma from '../config/db.js';
-import provider from '../config/blockchain.js';
-import config from '../config/env.js';
+import defaultPrisma from '../config/db.js';
+import defaultProvider from '../config/blockchain.js';
+import defaultConfig from '../config/env.js';
 import logger from '../config/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -25,26 +25,67 @@ function loadAbi(name) {
   return null;
 }
 
-const auditLogAbi = loadAbi('AuditLog');
-const assetNftAbi = loadAbi('AssetNFT');
-const identityRegistryAbi = loadAbi('IdentityRegistry');
-const accessControlAbi = loadAbi('AccessControl');
+// AuditLog.logEvent(eventType, ...) strings emitted by the contracts, mapped
+// to the AuditEventType enum. The schema has no dedicated bucket for
+// access-control configuration changes, so those share ROLE_ASSIGNED and
+// payload.rawEventType disambiguates them. Unlisted strings are skipped
+// rather than guessed at.
+const SECURITY_EVENT_TYPES = {
+  DID_REG: 'IDENTITY_CREATED',
+  BATCH_DID_REG: 'IDENTITY_CREATED',
+  DID_REVOKE: 'ROLE_ASSIGNED',
+  CLEARANCE_UPDATE: 'ROLE_ASSIGNED',
+  ROLE_GRANTED: 'ROLE_ASSIGNED',
+  ROLE_REVOKED: 'ROLE_ASSIGNED',
+  ZONE_CONFIG: 'ROLE_ASSIGNED',
+  TEMP_PASS_GRANT: 'ROLE_ASSIGNED',
+  LOCKDOWN: 'ROLE_ASSIGNED',
+  ASSET_MINT: 'ASSET_MINTED',
+  ASSET_XFER: 'OWNERSHIP_TRANSFERRED',
+  CUSTODY_TRANSFERRED: 'OWNERSHIP_TRANSFERRED',
+  ACCESS_OK: 'PACS_ACCESS_GRANTED',
+  ACCESS_DENY: 'PACS_ACCESS_DENIED',
+};
 
-// AccessControl.sol grants/revokes roles as keccak256(`ROLE_<NAME>`) rather than
-// a readable bytes32 string, so build a reverse lookup for the app-level roles
-// we know about (see ROLE_VALUES in admin.validator.js) purely for readable
-// audit payloads — falls back to the raw hash for anything unrecognized.
-const KNOWN_ROLES = ['ADMIN', 'MANAGER', 'AUDITOR', 'USER', 'SYSTEM_CONNECTOR'];
-const roleHashToName = new Map(
-  KNOWN_ROLES.map((name) => [ethers.keccak256(ethers.toUtf8Bytes(`ROLE_${name}`)), name])
-);
-
-async function upsertAuditEvent({ type, actorId, targetId, txHash, blockNumber, payload }) {
-  if (!prisma) return;
+function decodeBytes32(value) {
   try {
-    const existing = await prisma.auditEvent.findFirst({
-      where: { txHash, type },
-    });
+    return ethers.decodeBytes32String(value);
+  } catch {
+    return value;
+  }
+}
+
+// A public RPC rejects eth_getLogs ranges that are too wide or return too many
+// results; the message wording differs per provider.
+function isRangeError(err) {
+  return /range|limit|exceed|too many|too large|10000|block/i.test(`${err?.message || ''} ${err?.shortMessage || ''}`);
+}
+
+/**
+ * Builds the on-chain event indexer. Dependencies are injectable so the sync
+ * loop can be exercised without the real DB/provider singletons.
+ *
+ * Every event is read by one code path: a serialized loop that pulls logs for
+ * [checkpoint + 1, head - confirmations] in chunks, hands each to its handler,
+ * and only then advances a Postgres checkpoint. On start-up that loop is the
+ * backfill (events emitted while the server was down); afterwards it keeps
+ * running on an interval. Handlers are idempotent (dedupe on txHash + type),
+ * so re-reading a range after a crash or a failed chunk is safe.
+ */
+export function createIndexer({
+  prisma = defaultPrisma,
+  provider = defaultProvider,
+  config = defaultConfig,
+} = {}) {
+  let timer = null;
+  let syncing = false;
+  let memoryCheckpoint = null;
+  let checkpointStoreWarned = false;
+
+  async function upsertAuditEvent({ type, actorId, targetId, txHash, blockNumber, payload }) {
+    // Errors propagate on purpose: the caller must not advance the checkpoint
+    // past an event that failed to persist.
+    const existing = await prisma.auditEvent.findFirst({ where: { txHash, type } });
     if (existing) return;
 
     await prisma.auditEvent.create({
@@ -58,269 +99,338 @@ async function upsertAuditEvent({ type, actorId, targetId, txHash, blockNumber, 
       },
     });
     logger.info(`[Indexer] Indexed ${type} event from tx ${txHash}`);
-  } catch (err) {
-    logger.warn(`[Indexer] Failed to upsert AuditEvent for ${txHash}: ${err.message}`);
   }
+
+  async function resolveUserByWallet(wallet) {
+    if (!wallet || wallet === ethers.ZeroAddress) return null;
+    let checksum;
+    try {
+      checksum = ethers.getAddress(wallet);
+    } catch {
+      return null;
+    }
+    return prisma.user.findUnique({ where: { walletAddress: checksum }, select: { id: true } });
+  }
+
+  async function resolveAssetByTokenId(tokenId) {
+    if (tokenId === undefined || tokenId === null) return null;
+    return prisma.asset.findUnique({ where: { tokenId: tokenId.toString() }, select: { id: true, ownerId: true } });
+  }
+
+  // Handlers take the decoded event args (positional, as declared in the ABI)
+  // and the log's position on chain.
+  const handlers = {
+    'auditLog:SecurityAuditLog': async ([eventType, actor, target, entityId, timestamp, details], { txHash, blockNumber }) => {
+      const rawEventType = decodeBytes32(eventType);
+      const type = SECURITY_EVENT_TYPES[rawEventType];
+      if (!type) {
+        logger.debug?.(`[Indexer] SecurityAuditLog ${rawEventType} has no audit-trail mapping; skipped`);
+        return;
+      }
+      const actorUser = await resolveUserByWallet(actor);
+      await upsertAuditEvent({
+        type,
+        actorId: actorUser?.id,
+        targetId: target !== ethers.ZeroAddress ? target : null,
+        txHash,
+        blockNumber,
+        payload: {
+          rawEventType,
+          actor,
+          target,
+          entityId,
+          details,
+          onChainTimestamp: timestamp.toString(),
+        },
+      });
+    },
+
+    'assetNft:AssetMinted': async ([tokenId, initialCustodian, assetTag, classificationTier, sbu, tokenURI], { txHash, blockNumber }) => {
+      const actorUser = await resolveUserByWallet(initialCustodian);
+      const assetRec = await resolveAssetByTokenId(tokenId);
+      await upsertAuditEvent({
+        type: 'ASSET_MINTED',
+        actorId: actorUser?.id,
+        targetId: assetRec?.id,
+        txHash,
+        blockNumber,
+        payload: {
+          tokenId: tokenId.toString(),
+          custodian: initialCustodian,
+          assetTag,
+          classificationTier: Number(classificationTier),
+          sbu: decodeBytes32(sbu),
+          tokenURI,
+        },
+      });
+    },
+
+    'assetNft:CustodyReassigned': async ([tokenId, previousCustodian, newCustodian, reason, timestamp], { txHash, blockNumber }) => {
+      const newCustodianUser = await resolveUserByWallet(newCustodian);
+      const assetRec = await resolveAssetByTokenId(tokenId);
+      await upsertAuditEvent({
+        type: 'OWNERSHIP_TRANSFERRED',
+        actorId: newCustodianUser?.id,
+        targetId: assetRec?.id,
+        txHash,
+        blockNumber,
+        payload: {
+          tokenId: tokenId.toString(),
+          previousCustodian,
+          newCustodian,
+          reason,
+          onChainTimestamp: timestamp.toString(),
+        },
+      });
+    },
+
+    'identityRegistry:IdentityCreated': async ([user, did, hash, clearanceLevel, sbuCode], { txHash, blockNumber }) => {
+      const actorUser = await resolveUserByWallet(user);
+      await upsertAuditEvent({
+        type: 'IDENTITY_CREATED',
+        actorId: actorUser?.id,
+        targetId: did,
+        txHash,
+        blockNumber,
+        payload: {
+          user,
+          did,
+          identityHash: hash,
+          clearanceLevel: Number(clearanceLevel),
+          sbu: decodeBytes32(sbuCode),
+        },
+      });
+    },
+
+    'identityRegistry:ClearanceUpdated': async ([user, oldClearance, newClearance], { txHash, blockNumber }) => {
+      const actorUser = await resolveUserByWallet(user);
+      await upsertAuditEvent({
+        type: 'ROLE_ASSIGNED',
+        actorId: actorUser?.id,
+        targetId: user,
+        txHash,
+        blockNumber,
+        payload: {
+          user,
+          oldClearance: Number(oldClearance),
+          newClearance: Number(newClearance),
+        },
+      });
+    },
+
+    // Emergency lockdown toggles (issue #76). No dedicated AuditEventType
+    // exists for zone-lockdown admin actions, so this shares ROLE_ASSIGNED
+    // with the other access-control configuration changes.
+    'accessControl:EmergencyLockdownToggled': async ([zoneId, isLockedDown, actor], { txHash, blockNumber }) => {
+      const zoneIdStr = decodeBytes32(zoneId);
+      const actorUser = await resolveUserByWallet(actor);
+      logger.info(`[Indexer] EmergencyLockdownToggled: zone ${zoneIdStr} -> ${isLockedDown ? 'LOCKED' : 'UNLOCKED'} (Actor: ${actor})`);
+      await upsertAuditEvent({
+        type: 'ROLE_ASSIGNED',
+        actorId: actorUser?.id,
+        targetId: zoneIdStr,
+        txHash,
+        blockNumber,
+        payload: {
+          eventSource: 'EMERGENCY_LOCKDOWN_TOGGLE',
+          zoneId: zoneIdStr,
+          isLockedDown,
+          actor,
+        },
+      });
+    },
+  };
+
+  const sourceDefs = [
+    { key: 'auditLog', abiName: 'AuditLog', address: config.auditLogAddress },
+    { key: 'assetNft', abiName: 'AssetNFT', address: config.contractAddress },
+    { key: 'identityRegistry', abiName: 'IdentityRegistry', address: config.identityRegistryAddress },
+    { key: 'accessControl', abiName: 'AccessControl', address: config.accessControlAddress },
+  ];
+
+  // Contracts we can decode: address configured and ABI present.
+  const sources = new Map();
+  for (const def of sourceDefs) {
+    const abi = def.address ? loadAbi(def.abiName) : null;
+    if (!def.address || !abi) continue;
+    sources.set(def.address.toLowerCase(), {
+      key: def.key,
+      address: def.address,
+      iface: new ethers.Interface(abi),
+    });
+  }
+
+  async function processLog(log) {
+    const source = sources.get(log.address.toLowerCase());
+    if (!source) return;
+    const parsed = source.iface.parseLog({ topics: log.topics, data: log.data });
+    if (!parsed) return;
+    const handler = handlers[`${source.key}:${parsed.name}`];
+    if (!handler) return;
+    await handler(parsed.args, { txHash: log.transactionHash, blockNumber: log.blockNumber });
+  }
+
+  // The checkpoint is keyed by chain and contract set, so redeploying the
+  // contracts (new addresses) starts a fresh backfill instead of resuming a
+  // stale position.
+  function checkpointId(chainId) {
+    const addresses = [...sources.keys()].sort().join(',');
+    return `${chainId}:${ethers.id(addresses).slice(2, 10)}`;
+  }
+
+  async function loadCheckpoint(id) {
+    try {
+      const row = await prisma.indexerCheckpoint.findUnique({ where: { id } });
+      return row ? Number(row.lastBlock) : null;
+    } catch (err) {
+      warnCheckpointStore(err);
+      return memoryCheckpoint;
+    }
+  }
+
+  async function saveCheckpoint(id, lastBlock) {
+    memoryCheckpoint = lastBlock;
+    try {
+      await prisma.indexerCheckpoint.upsert({
+        where: { id },
+        update: { lastBlock: BigInt(lastBlock) },
+        create: { id, lastBlock: BigInt(lastBlock) },
+      });
+    } catch (err) {
+      warnCheckpointStore(err);
+    }
+  }
+
+  function warnCheckpointStore(err) {
+    if (checkpointStoreWarned) return;
+    checkpointStoreWarned = true;
+    logger.warn(
+      `[Indexer] Checkpoint table unavailable (${err.message}); progress is kept in memory only and a restart will re-scan. Run "prisma migrate deploy".`
+    );
+  }
+
+  /**
+   * One pass of the loop: index everything between the checkpoint and the
+   * (confirmed) chain head. Resolves with the number of blocks covered.
+   */
+  async function syncOnce() {
+    if (syncing) return 0;
+    syncing = true;
+    try {
+      const { chainId } = await provider.getNetwork();
+      const id = checkpointId(chainId);
+      const head = await provider.getBlockNumber();
+      const target = head - config.indexerConfirmations;
+
+      let last = await loadCheckpoint(id);
+      if (last !== null && last > target) {
+        // Checkpoint is ahead of the chain (e.g. RPC pointed at a different network).
+        logger.warn(`[Indexer] Checkpoint ${last} is ahead of chain head ${head}; re-scanning from the configured start.`);
+        last = null;
+      }
+      if (last === null) {
+        const configured = config.indexerFromBlock;
+        if (configured === undefined) {
+          logger.warn(
+            `[Indexer] No checkpoint and INDEXER_FROM_BLOCK unset; scanning the last ${config.indexerLookbackBlocks} blocks. Set INDEXER_FROM_BLOCK to the contracts' deployment block for a full history.`
+          );
+        }
+        last = (configured ?? Math.max(0, target - config.indexerLookbackBlocks)) - 1;
+      }
+
+      let from = last + 1;
+      if (from > target) return 0;
+
+      const total = target - from + 1;
+      if (total > config.indexerChunkSize) {
+        logger.info(`[Indexer] Catching up ${total} blocks (${from} -> ${target})`);
+      }
+
+      const addresses = [...sources.values()].map((s) => s.address);
+      let chunk = config.indexerChunkSize;
+      while (from <= target) {
+        const to = Math.min(from + chunk - 1, target);
+        let logs;
+        try {
+          logs = await provider.getLogs({ address: addresses, fromBlock: from, toBlock: to });
+        } catch (err) {
+          if (chunk > 1 && isRangeError(err)) {
+            chunk = Math.max(1, Math.floor(chunk / 2));
+            logger.debug?.(`[Indexer] RPC rejected the block range; retrying with ${chunk}-block chunks`);
+            continue;
+          }
+          throw err;
+        }
+
+        logs.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
+        for (const log of logs) await processLog(log);
+
+        await saveCheckpoint(id, to);
+        from = to + 1;
+      }
+      return total;
+    } finally {
+      syncing = false;
+    }
+  }
+
+  async function safeSync() {
+    try {
+      await syncOnce();
+    } catch (err) {
+      // Checkpoint stays at the last fully processed chunk; the next tick retries.
+      logger.warn(`[Indexer] Sync failed, will retry: ${err.message}`);
+    }
+  }
+
+  async function start() {
+    if (!provider) {
+      logger.warn('[Indexer] Provider not available; indexer disabled.');
+      return;
+    }
+    if (!prisma) {
+      logger.warn('[Indexer] Database not available; indexer disabled.');
+      return;
+    }
+    if (sources.size === 0) {
+      logger.warn('[Indexer] No contract addresses/ABIs configured; indexer disabled.');
+      return;
+    }
+
+    // JsonRpcProvider retries indefinitely when its endpoint is unreachable.
+    // Verify connectivity before starting so a bad development RPC_URL does
+    // not leave the backend producing retry noise forever.
+    try {
+      await provider.getNetwork();
+    } catch (err) {
+      logger.warn(`[Indexer] RPC endpoint unavailable; indexer disabled: ${err.message}`);
+      provider.destroy?.();
+      return;
+    }
+
+    for (const source of sources.values()) {
+      logger.info(`[Indexer] Watching ${source.key} (${source.address})`);
+    }
+
+    await safeSync(); // backfill anything missed while the server was down
+    timer = setInterval(safeSync, config.indexerPollIntervalMs);
+    timer.unref?.();
+    logger.info(`[Indexer] On-chain event indexer active (polling every ${config.indexerPollIntervalMs}ms, ${config.indexerConfirmations} confirmation(s))`);
+  }
+
+  function stop() {
+    if (timer) clearInterval(timer);
+    timer = null;
+  }
+
+  return { start, stop, syncOnce };
 }
 
-async function resolveUserByWallet(wallet) {
-  if (!prisma || !wallet || wallet === ethers.ZeroAddress) return null;
-  try {
-    return await prisma.user.findUnique({
-      where: { walletAddress: ethers.getAddress(wallet) },
-      select: { id: true },
-    });
-  } catch {
-    return null;
-  }
-}
-
-async function resolveAssetByTokenId(tokenId) {
-  if (!prisma || !tokenId) return null;
-  try {
-    return await prisma.asset.findUnique({
-      where: { tokenId: tokenId.toString() },
-      select: { id: true, ownerId: true },
-    });
-  } catch {
-    return null;
-  }
-}
+let instance = null;
 
 export async function startIndexer() {
-  if (!provider) {
-    logger.warn('[Indexer] Provider not available; indexer disabled.');
-    return;
-  }
-
-  // JsonRpcProvider retries indefinitely when its endpoint is unreachable.
-  // Verify connectivity before registering listeners so a bad development
-  // RPC_URL does not leave the backend producing retry noise forever.
-  try {
-    await provider.getNetwork();
-  } catch (err) {
-    logger.warn(`[Indexer] RPC endpoint unavailable; indexer disabled: ${err.message}`);
-    provider.destroy?.();
-    return;
-  }
-
-  const latestBlock = await provider.getBlockNumber();
-  const fromBlock = parseInt(process.env.INDEXER_FROM_BLOCK || '0', 10) || Math.max(0, latestBlock - 500);
-
-  // 1. Subscribe to AuditLog.sol (Unified Security Stream)
-  if (config.auditLogAddress && auditLogAbi) {
-    try {
-      const auditContract = new ethers.Contract(config.auditLogAddress, auditLogAbi, provider);
-
-      auditContract.on('SecurityAuditLog', async (eventType, actor, target, entityId, timestamp, details, event) => {
-        try {
-          const txHash = event.log?.transactionHash || event.transactionHash;
-          const blockNumber = event.log?.blockNumber ?? event.blockNumber ?? 0;
-          const eventTypeStr = ethers.decodeBytes32String(eventType);
-
-          logger.info(`[Indexer] SecurityAuditLog: ${eventTypeStr} (Actor: ${actor}, Target: ${target})`);
-
-          let dbEventType = 'IDENTITY_CREATED';
-          if (eventTypeStr.includes('MINT')) dbEventType = 'ASSET_MINTED';
-          else if (eventTypeStr.includes('XFER') || eventTypeStr.includes('TRANSFER')) dbEventType = 'OWNERSHIP_TRANSFERRED';
-          else if (eventTypeStr.includes('CLEARANCE') || eventTypeStr.includes('ROLE')) dbEventType = 'ROLE_ASSIGNED';
-          else if (eventTypeStr.includes('PASS') || eventTypeStr.includes('OK') || eventTypeStr.includes('GRANTED')) dbEventType = 'PACS_ACCESS_GRANTED';
-          else if (eventTypeStr.includes('DENY') || eventTypeStr.includes('LOCK')) dbEventType = 'PACS_ACCESS_DENIED';
-
-          const actorUser = await resolveUserByWallet(actor);
-
-          await upsertAuditEvent({
-            type: dbEventType,
-            actorId: actorUser?.id || null,
-            targetId: target !== ethers.ZeroAddress ? target : null,
-            txHash,
-            blockNumber,
-            payload: {
-              rawEventType: eventTypeStr,
-              actor,
-              target,
-              entityId,
-              details,
-              onChainTimestamp: timestamp.toString(),
-            },
-          });
-        } catch (err) {
-          logger.error(`[Indexer] SecurityAuditLog error: ${err.message}`);
-        }
-      });
-
-      logger.info(`[Indexer] Subscribed to AuditLog (${config.auditLogAddress})`);
-    } catch (err) {
-      logger.warn(`[Indexer] Failed to attach AuditLog listener: ${err.message}`);
-    }
-  }
-
-  // 2. Subscribe to AssetNFT.sol
-  if (config.contractAddress && assetNftAbi) {
-    try {
-      const assetContract = new ethers.Contract(config.contractAddress, assetNftAbi, provider);
-
-      assetContract.on('AssetMinted', async (tokenId, initialCustodian, assetTag, classificationTier, sbu, tokenURI, event) => {
-        try {
-          const txHash = event.log?.transactionHash || event.transactionHash;
-          const blockNumber = event.log?.blockNumber ?? event.blockNumber ?? 0;
-          const actorUser = await resolveUserByWallet(initialCustodian);
-          const assetRec = await resolveAssetByTokenId(tokenId);
-
-          await upsertAuditEvent({
-            type: 'ASSET_MINTED',
-            actorId: actorUser?.id || null,
-            targetId: assetRec?.id || null,
-            txHash,
-            blockNumber,
-            payload: {
-              tokenId: tokenId.toString(),
-              custodian: initialCustodian,
-              assetTag,
-              classificationTier: Number(classificationTier),
-              sbu: ethers.decodeBytes32String(sbu),
-              tokenURI,
-            },
-          });
-        } catch (err) {
-          logger.error(`[Indexer] AssetMinted error: ${err.message}`);
-        }
-      });
-
-      assetContract.on('CustodyReassigned', async (tokenId, previousCustodian, newCustodian, reason, timestamp, event) => {
-        try {
-          const txHash = event.log?.transactionHash || event.transactionHash;
-          const blockNumber = event.log?.blockNumber ?? event.blockNumber ?? 0;
-          const newCustodianUser = await resolveUserByWallet(newCustodian);
-          const assetRec = await resolveAssetByTokenId(tokenId);
-
-          await upsertAuditEvent({
-            type: 'OWNERSHIP_TRANSFERRED',
-            actorId: newCustodianUser?.id || null,
-            targetId: assetRec?.id || null,
-            txHash,
-            blockNumber,
-            payload: {
-              tokenId: tokenId.toString(),
-              previousCustodian,
-              newCustodian,
-              reason,
-              onChainTimestamp: timestamp.toString(),
-            },
-          });
-        } catch (err) {
-          logger.error(`[Indexer] CustodyReassigned error: ${err.message}`);
-        }
-      });
-
-      logger.info(`[Indexer] Subscribed to AssetNFT (${config.contractAddress})`);
-    } catch (err) {
-      logger.warn(`[Indexer] Failed to attach AssetNFT listener: ${err.message}`);
-    }
-  }
-
-  // 3. Subscribe to IdentityRegistry.sol
-  if (config.identityRegistryAddress && identityRegistryAbi) {
-    try {
-      const identityContract = new ethers.Contract(config.identityRegistryAddress, identityRegistryAbi, provider);
-
-      identityContract.on('IdentityCreated', async (user, did, hash, clearanceLevel, sbuCode, event) => {
-        try {
-          const txHash = event.log?.transactionHash || event.transactionHash;
-          const blockNumber = event.log?.blockNumber ?? event.blockNumber ?? 0;
-          const actorUser = await resolveUserByWallet(user);
-
-          await upsertAuditEvent({
-            type: 'IDENTITY_CREATED',
-            actorId: actorUser?.id || null,
-            targetId: did,
-            txHash,
-            blockNumber,
-            payload: {
-              user,
-              did,
-              identityHash: hash,
-              clearanceLevel: Number(clearanceLevel),
-              sbu: ethers.decodeBytes32String(sbuCode),
-            },
-          });
-        } catch (err) {
-          logger.error(`[Indexer] IdentityCreated error: ${err.message}`);
-        }
-      });
-
-      identityContract.on('ClearanceUpdated', async (user, oldClearance, newClearance, event) => {
-        try {
-          const txHash = event.log?.transactionHash || event.transactionHash;
-          const blockNumber = event.log?.blockNumber ?? event.blockNumber ?? 0;
-          const actorUser = await resolveUserByWallet(user);
-
-          await upsertAuditEvent({
-            type: 'ROLE_ASSIGNED',
-            actorId: actorUser?.id || null,
-            targetId: user,
-            txHash,
-            blockNumber,
-            payload: {
-              user,
-              oldClearance: Number(oldClearance),
-              newClearance: Number(newClearance),
-            },
-          });
-        } catch (err) {
-          logger.error(`[Indexer] ClearanceUpdated error: ${err.message}`);
-        }
-      });
-
-      logger.info(`[Indexer] Subscribed to IdentityRegistry (${config.identityRegistryAddress})`);
-    } catch (err) {
-      logger.warn(`[Indexer] Failed to attach IdentityRegistry listener: ${err.message}`);
-    }
-  }
-
-  // 4. Subscribe to AccessControl.sol (Emergency lockdown toggles, issue #76)
-  if (config.accessControlAddress && accessControlAbi) {
-    try {
-      const accessControlContract = new ethers.Contract(config.accessControlAddress, accessControlAbi, provider);
-
-      accessControlContract.on('EmergencyLockdownToggled', async (zoneId, isLockedDown, actor, event) => {
-        try {
-          const txHash = event.log?.transactionHash || event.transactionHash;
-          const blockNumber = event.log?.blockNumber ?? event.blockNumber ?? 0;
-          const zoneIdStr = ethers.decodeBytes32String(zoneId);
-          const actorUser = await resolveUserByWallet(actor);
-
-          logger.info(`[Indexer] EmergencyLockdownToggled: zone ${zoneIdStr} -> ${isLockedDown ? 'LOCKED' : 'UNLOCKED'} (Actor: ${actor})`);
-
-          // No dedicated AuditEventType for zone-lockdown admin actions exists
-          // in the schema; ROLE_ASSIGNED is the closest existing bucket for
-          // an access-control configuration change (same family as
-          // ClearanceUpdated above) — payload.eventSource disambiguates it.
-          await upsertAuditEvent({
-            type: 'ROLE_ASSIGNED',
-            actorId: actorUser?.id || null,
-            targetId: zoneIdStr,
-            txHash,
-            blockNumber,
-            payload: {
-              eventSource: 'EMERGENCY_LOCKDOWN_TOGGLE',
-              zoneId: zoneIdStr,
-              isLockedDown,
-              actor,
-            },
-          });
-        } catch (err) {
-          logger.error(`[Indexer] EmergencyLockdownToggled error: ${err.message}`);
-        }
-      });
-
-      logger.info(`[Indexer] Subscribed to AccessControl (${config.accessControlAddress})`);
-    } catch (err) {
-      logger.warn(`[Indexer] Failed to attach AccessControl listener: ${err.message}`);
-    }
-  }
-
-  logger.info('[Indexer] Multi-contract on-chain event indexer active on Ethereum Sepolia!');
+  instance ??= createIndexer();
+  return instance.start();
 }
 
-export default { startIndexer };
+export default { startIndexer, createIndexer };

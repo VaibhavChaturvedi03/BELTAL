@@ -1,12 +1,49 @@
 import prisma from '../config/db.js';
 import logger from '../config/logger.js';
 import ApiError from '../utils/ApiError.js';
+import tamperService from './tamper.service.js';
+
+const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 
 /**
  * Unified audit trail service — reads from AuditEvent and PacsBadgeEvent tables
  * with paginated, filterable, time-range queries. (Issue #47)
  */
 export const auditService = {
+  /**
+   * Persist an audit row for an action the API itself just performed. If the
+   * event indexer already picked up the same on-chain tx (same txHash + type)
+   * it is enriched with the actor/target instead of duplicated.
+   */
+  async recordEvent({ type, actorId, targetId, txHash, blockNumber, payload }) {
+    if (!prisma) return null;
+
+    if (TX_HASH_RE.test(txHash || '')) {
+      const existing = await prisma.auditEvent.findFirst({ where: { txHash, type } });
+      if (existing) {
+        return prisma.auditEvent.update({
+          where: { id: existing.id },
+          data: {
+            actorId: actorId || existing.actorId,
+            targetId: targetId || existing.targetId,
+            payload: { ...(existing.payload || {}), ...(payload || {}) },
+          },
+        });
+      }
+    }
+
+    return prisma.auditEvent.create({
+      data: {
+        type,
+        actorId: actorId || null,
+        targetId: targetId || null,
+        txHash,
+        blockNumber: BigInt(blockNumber || 0),
+        payload: payload || {},
+      },
+    });
+  },
+
   /**
    * Paginated, filterable audit trail.
    * Supports filters: type, actorId, targetId, txHash, from, to, page, limit
@@ -47,8 +84,7 @@ export const auditService = {
       prisma.auditEvent.count({ where }),
       prisma.auditEvent.findMany({
         where,
-        skip,
-        take: limit,
+        take: skip + limit,
         orderBy: { createdAt: 'desc' },
         include: {
           actor: {
@@ -88,6 +124,7 @@ export const auditService = {
 
       // Zone filter via targetId (zoneId)
       if (query.targetId) pacsWhere.zoneId = query.targetId;
+      if (query.txHash) pacsWhere.onChainTxHash = query.txHash;
 
       if (query.from || query.to) {
         pacsWhere.scannedAt = {};
@@ -112,7 +149,7 @@ export const auditService = {
         prisma.pacsBadgeEvent.count({ where: pacsWhere }),
         prisma.pacsBadgeEvent.findMany({
           where: pacsWhere,
-          take: limit,
+          take: skip + limit,
           orderBy: { scannedAt: 'desc' },
           include: {
             employee: {
@@ -150,13 +187,14 @@ export const auditService = {
       timestamp: p.scannedAt,
     }));
 
-    // Merge and sort unified trail by timestamp desc
+    // Each source is over-fetched to skip + limit so the merged, time-ordered
+    // page is correct for any page number, then sliced to the requested window.
     const unified = [...normalizedAudit, ...normalizedPacs].sort(
       (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
     );
 
     return {
-      events: unified.slice(0, limit),
+      events: unified.slice(skip, skip + limit),
       pagination: {
         total:      totalAudit + totalPacs,
         page,
@@ -200,6 +238,94 @@ export const auditService = {
       blockNumber: event.blockNumber ? event.blockNumber.toString() : null,
       payload:     event.payload,
       timestamp:   event.createdAt,
+    };
+  },
+
+  /**
+   * Headline counts for the auditor dashboard, optionally bounded by from/to.
+   */
+  async getAuditStats(query = {}) {
+    if (!prisma) throw new ApiError(503, 'Database unavailable');
+
+    const where = {};
+    if (query.from || query.to) {
+      where.createdAt = {};
+      if (query.from) where.createdAt.gte = new Date(query.from);
+      if (query.to)   where.createdAt.lte = new Date(query.to);
+    }
+
+    const grouped = await prisma.auditEvent.groupBy({
+      by: ['type'],
+      where,
+      _count: { _all: true },
+    });
+    const counts = Object.fromEntries(grouped.map((g) => [g.type, g._count._all]));
+
+    return {
+      identityCreated:  counts.IDENTITY_CREATED || 0,
+      roleChanged:      counts.ROLE_ASSIGNED || 0,
+      assetMinted:      counts.ASSET_MINTED || 0,
+      transferExecuted: counts.OWNERSHIP_TRANSFERRED || 0,
+      total:            grouped.reduce((sum, g) => sum + g._count._all, 0),
+    };
+  },
+
+  /**
+   * Independently verify one indexed record against the chain: the recorded
+   * txHash must exist on-chain, have succeeded, and (when a block was
+   * recorded) sit in the same block.
+   */
+  async verifyAuditEvent(eventId) {
+    if (!prisma) throw new ApiError(503, 'Database unavailable');
+
+    let txHash = null;
+    let recordedBlock = null;
+
+    const event = await prisma.auditEvent.findUnique({ where: { id: eventId } });
+    if (event) {
+      txHash = event.txHash;
+      recordedBlock = event.blockNumber;
+    } else {
+      const badgeEvent = await prisma.pacsBadgeEvent.findUnique({ where: { id: eventId } });
+      if (!badgeEvent) throw new ApiError(404, 'Audit event not found');
+      txHash = badgeEvent.onChainTxHash;
+      recordedBlock = badgeEvent.blockNumber;
+    }
+
+    if (!TX_HASH_RE.test(txHash || '')) {
+      return {
+        id: eventId,
+        verified: false,
+        txHash: txHash || null,
+        message: 'No on-chain transaction is recorded for this event',
+      };
+    }
+
+    let onChain;
+    try {
+      onChain = await tamperService.verifyTransaction(txHash);
+    } catch (err) {
+      if (err.status === 404) {
+        return { id: eventId, verified: false, txHash, message: 'Transaction not found on-chain' };
+      }
+      throw err;
+    }
+
+    const blockMatches =
+      !recordedBlock || String(recordedBlock) === '0' || String(recordedBlock) === onChain.blockNumber;
+    const verified = onChain.status === 'SUCCESS' && blockMatches;
+
+    return {
+      id: eventId,
+      verified,
+      txHash,
+      blockNumber: onChain.blockNumber,
+      explorerUrl: onChain.explorerUrl,
+      message: verified
+        ? 'Transaction confirmed on-chain and matches the indexed record'
+        : onChain.status !== 'SUCCESS'
+          ? `On-chain transaction status is ${onChain.status}`
+          : 'Indexed block number does not match the on-chain block',
     };
   },
 };

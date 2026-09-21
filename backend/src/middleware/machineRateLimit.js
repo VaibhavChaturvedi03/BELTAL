@@ -13,7 +13,21 @@ export const machineIngestLimiter = rateLimit({
   max: 120,
   standardHeaders: true,
   legacyHeaders: false,
-  message: { success: false, message: 'Too many machine-ingest requests, slow down.' },
+  message: { error: { message: 'Too many machine-ingest requests, slow down.', status: 429 } },
+});
+
+/**
+ * Rate limit for the read-only PACS console endpoints (zones/events) that the
+ * frontend badge simulator polls every few seconds. A per-minute window keeps
+ * polling from consuming the general human apiLimiter budget while still
+ * capping abuse.
+ */
+export const pacsConsoleLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { message: 'Too many PACS console requests, slow down.', status: 429 } },
 });
 
 export default machineIngestLimiter;

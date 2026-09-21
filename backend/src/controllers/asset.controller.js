@@ -37,7 +37,7 @@ export const assetController = {
    */
   async getAssetById(req, res, next) {
     try {
-      const asset = await assetService.getAssetById(req.params.id);
+      const asset = await assetService.getAssetById(req.params.id, req.user);
       return res.status(200).json({
         success: true,
         data: asset,
@@ -52,7 +52,7 @@ export const assetController = {
    */
   async listAssets(req, res, next) {
     try {
-      const { assets, pagination } = await assetService.listAssets(req.query);
+      const { assets, pagination } = await assetService.listAssets(req.user, req.query);
       return res.status(200).json({
         success: true,
         data: assets,

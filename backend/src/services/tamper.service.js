@@ -7,6 +7,35 @@ import ipfsService from './ipfs.service.js';
 import { computeIdentityHash, decryptDossier } from '../utils/dossier.util.js';
 import chainService from './chain.service.js';
 
+// Any of these on an identity means the database disagrees with an
+// independent source (the chain or the encrypted dossier).
+const IDENTITY_DRIFT_STATUSES = new Set([
+  'HASH_DRIFT',
+  'SBU_DRIFT',
+  'ON_CHAIN_HASH_DRIFT',
+  'ON_CHAIN_SBU_DRIFT',
+  'CLEARANCE_DRIFT',
+  'STATUS_DRIFT',
+]);
+
+function assertSimulationEnabled() {
+  if (!config.tamperSimulationEnabled) {
+    throw new ApiError(403, 'Tamper simulation is disabled on this server (ENABLE_TAMPER_SIMULATION).');
+  }
+}
+
+async function findIdentity(id) {
+  const user = await prisma.user.findFirst({ where: { OR: [{ id }, { externalId: id }] } });
+  if (!user) throw new ApiError(404, 'Employee identity not found');
+  return user;
+}
+
+async function findAsset(id) {
+  const asset = await prisma.asset.findFirst({ where: { OR: [{ id }, { tokenId: id }] } });
+  if (!asset) throw new ApiError(404, 'Asset not found');
+  return asset;
+}
+
 /**
  * Anti-Tamper Verification Service (Issue #47 flagship feature).
  *
@@ -60,6 +89,7 @@ export const tamperService = {
         status: 'SKIPPED',
         reason: 'Asset has no on-chain tokenId — minted off-chain only',
       });
+      report.verdict = 'PARTIAL';
       return report;
     }
 
@@ -72,6 +102,7 @@ export const tamperService = {
         status: 'NOT_FOUND',
         reason: onChain.error || `Token #${asset.tokenId} not found on-chain`,
       });
+      report.verdict = 'PARTIAL';
       return report;
     }
 
@@ -130,10 +161,15 @@ export const tamperService = {
 
   /**
    * Verify an employee identity's integrity:
-   * 1. Load user from PostgreSQL (identityHash, identitySalt, dossierCid).
-   * 2. Fetch encrypted dossier from IPFS via Pinata gateway.
-   * 3. Decrypt dossier and recompute keccak256(externalId, fullName, sbu, salt).
-   * 4. Compare recomputed hash vs stored identityHash.
+   * 1. Load user from PostgreSQL (identityHash, identitySalt, dossierCid,
+   *    clearance, revocation state).
+   * 2. Read the identity straight from the IdentityRegistry contract.
+   * 3. Fetch and decrypt the IPFS dossier and recompute
+   *    keccak256(externalId, fullName, sbu, salt).
+   * 4. Compare every database value with its independent source.
+   *
+   * The on-chain reads run whether or not IPFS answers, so a forged clearance
+   * is still caught when the dossier gateway is down.
    */
   async verifyIdentityIntegrity(employeeId) {
     if (!prisma) throw new ApiError(503, 'Database unavailable');
@@ -150,6 +186,8 @@ export const tamperService = {
         identitySalt: true,
         dossierCid: true,
         sbu: true,
+        clearanceLevel: true,
+        revokedAt: true,
       },
     });
 
@@ -165,113 +203,244 @@ export const tamperService = {
       verifications: [],
     };
 
+    // --- On-chain identity (source of truth for clearance, SBU and status) ---
+    const onChain = await chainService.verifyIdentityOnChain({
+      walletAddress: user.walletAddress,
+      identityHash: user.identityHash,
+    });
+
+    // --- IPFS dossier: recompute the identity hash from the decrypted PII ---
+    let fetchFailed = false;
+    let dossier = null;
     if (!user.dossierCid) {
       report.verifications.push({
         check: 'DOSSIER_CID',
         status: 'SKIPPED',
         reason: 'No dossierCid stored for this identity — registered before IPFS integration',
       });
-      report.verdict = 'PARTIAL';
-      return report;
+    } else {
+      try {
+        const gateway = config.pinataGateway || 'https://gateway.pinata.cloud/ipfs';
+        const response = await fetch(`${gateway}/${user.dossierCid}`, { signal: AbortSignal.timeout(10000) });
+        if (!response.ok) throw new Error(`IPFS gateway returned ${response.status}`);
+        dossier = decryptDossier(await response.json());
+        report.ipfsAvailable = true;
+      } catch (err) {
+        fetchFailed = true;
+        report.verifications.push({
+          check: 'IPFS_DOSSIER_FETCH',
+          status: 'FETCH_ERROR',
+          reason: `Failed to fetch or decrypt dossier from IPFS: ${err.message}`,
+        });
+      }
     }
 
-    // Fetch dossier from IPFS
-    let dossier = null;
-    try {
-      const gateway = config.pinataGateway || 'https://gateway.pinata.cloud/ipfs';
-      const url = `${gateway}/${user.dossierCid}`;
-      const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
-      if (!response.ok) throw new Error(`IPFS gateway returned ${response.status}`);
-      const raw = await response.json();
-      dossier = decryptDossier(raw);
-      report.ipfsAvailable = true;
-    } catch (err) {
+    if (dossier) {
+      let recomputedHash = null;
+      try {
+        recomputedHash = computeIdentityHash({
+          externalId: dossier.externalId,
+          fullName: dossier.fullName,
+          sbu: dossier.sbu,
+          salt: user.identitySalt,
+        });
+      } catch (err) {
+        fetchFailed = true;
+        report.verifications.push({
+          check: 'IDENTITY_HASH_RECOMPUTE',
+          status: 'COMPUTE_ERROR',
+          reason: `Failed to recompute identity hash: ${err.message}`,
+        });
+      }
+
+      if (recomputedHash) {
+        const hashMatch = recomputedHash === user.identityHash;
+        report.verifications.push({
+          check: 'IDENTITY_HASH_INTEGRITY',
+          status: hashMatch ? 'HASH_MATCH' : 'HASH_DRIFT',
+          storedHash: user.identityHash,
+          recomputedHash,
+          description: hashMatch
+            ? 'Recomputed keccak256(externalId, fullName, sbu, salt) matches stored identityHash'
+            : 'ALERT: Recomputed identity hash does NOT match stored hash — PII dossier or DB record may have been tampered with',
+        });
+      }
+
+      // SBU cross-check: dossier SBU vs DB SBU
+      const sbuMatch = dossier.sbu === user.sbu;
       report.verifications.push({
-        check: 'IPFS_DOSSIER_FETCH',
-        status: 'FETCH_ERROR',
-        reason: `Failed to fetch or decrypt dossier from IPFS: ${err.message}`,
+        check: 'SBU_INTEGRITY',
+        status: sbuMatch ? 'SBU_MATCH' : 'SBU_DRIFT',
+        dbValue: user.sbu,
+        dossierValue: dossier.sbu,
+        description: sbuMatch
+          ? 'SBU in PostgreSQL matches SBU encrypted in IPFS dossier'
+          : 'ALERT: SBU in PostgreSQL does NOT match dossier — potential privilege escalation detected',
       });
-      report.verdict = 'VERIFICATION_ERROR';
-      return report;
     }
 
-    // Recompute identity hash from decrypted dossier fields
-    let recomputedHash = null;
-    try {
-      recomputedHash = computeIdentityHash({
-        externalId: dossier.externalId,
-        fullName:   dossier.fullName,
-        sbu:        dossier.sbu,
-        salt:       user.identitySalt,
-      });
-    } catch (err) {
-      report.verifications.push({
-        check: 'IDENTITY_HASH_RECOMPUTE',
-        status: 'COMPUTE_ERROR',
-        reason: `Failed to recompute identity hash: ${err.message}`,
-      });
-      report.verdict = 'VERIFICATION_ERROR';
-      return report;
-    }
-
-    const hashMatch = recomputedHash === user.identityHash;
-
-    report.verifications.push({
-      check: 'IDENTITY_HASH_INTEGRITY',
-      status: hashMatch ? 'HASH_MATCH' : 'HASH_DRIFT',
-      storedHash: user.identityHash,
-      recomputedHash,
-      description: hashMatch
-        ? 'Recomputed keccak256(externalId, fullName, sbu, salt) matches stored identityHash'
-        : 'ALERT: Recomputed identity hash does NOT match stored hash — PII dossier or DB record may have been tampered with',
-    });
-
-    // SBU cross-check: dossier SBU vs DB SBU
-    const sbuMatch = dossier.sbu === user.sbu;
-    report.verifications.push({
-      check: 'SBU_INTEGRITY',
-      status: sbuMatch ? 'SBU_MATCH' : 'SBU_DRIFT',
-      dbValue: user.sbu,
-      dossierValue: dossier.sbu,
-      description: sbuMatch
-        ? 'SBU in PostgreSQL matches SBU encrypted in IPFS dossier'
-        : 'ALERT: SBU in PostgreSQL does NOT match dossier — potential privilege escalation detected',
-    });
-
-    // Check 3: On-Chain IdentityRegistry verification
-    const onChainIdentity = await chainService.verifyIdentityOnChain({
-      walletAddress: user.walletAddress,
-      identityHash: user.identityHash,
-    });
-
-    if (onChainIdentity.verified) {
-      report.verifications.push({
-        check: 'ON_CHAIN_IDENTITY_REGISTRY',
-        status: 'ON_CHAIN_HASH_MATCH',
-        onChainClearance: onChainIdentity.clearanceLevel,
-        onChainSbu: onChainIdentity.sbuCode,
-        description: 'Identity hash and clearance confirmed on Ethereum Sepolia IdentityRegistry',
-      });
-    } else if (onChainIdentity.error) {
+    // --- Independent on-chain checks ---
+    if (onChain.error) {
       report.verifications.push({
         check: 'ON_CHAIN_IDENTITY_REGISTRY',
         status: 'SKIPPED',
-        reason: onChainIdentity.error,
+        reason: onChain.error,
       });
     } else {
+      const dbState = user.revokedAt ? 'REVOKED' : 'ACTIVE';
+      const chainState = onChain.isActive ? 'ACTIVE' : 'REVOKED';
+      const statusMatch = dbState === chainState;
       report.verifications.push({
-        check: 'ON_CHAIN_IDENTITY_REGISTRY',
-        status: 'ON_CHAIN_HASH_DRIFT',
-        description: 'ALERT: Identity hash in DB does NOT match on-chain IdentityRegistry hash',
+        check: 'ON_CHAIN_STATUS',
+        status: statusMatch ? 'STATUS_MATCH' : 'STATUS_DRIFT',
+        dbValue: dbState,
+        onChainValue: chainState,
+        description: statusMatch
+          ? `Identity is ${chainState.toLowerCase()} in both PostgreSQL and the IdentityRegistry`
+          : 'ALERT: PostgreSQL and the IdentityRegistry disagree on whether this identity is active — a revocation or reinstatement was bypassed',
       });
+
+      const clearanceMatch = Number(user.clearanceLevel) === Number(onChain.clearanceLevel);
+      report.verifications.push({
+        check: 'CLEARANCE_INTEGRITY',
+        status: clearanceMatch ? 'CLEARANCE_MATCH' : 'CLEARANCE_DRIFT',
+        dbValue: user.clearanceLevel,
+        onChainValue: onChain.clearanceLevel,
+        description: clearanceMatch
+          ? 'Clearance level in PostgreSQL matches the IdentityRegistry'
+          : 'ALERT: Clearance level in PostgreSQL does NOT match the IdentityRegistry — privilege escalation in the database detected',
+      });
+
+      const sbuOnChainMatch = user.sbu === onChain.sbuCode;
+      report.verifications.push({
+        check: 'ON_CHAIN_SBU',
+        status: sbuOnChainMatch ? 'ON_CHAIN_SBU_MATCH' : 'ON_CHAIN_SBU_DRIFT',
+        dbValue: user.sbu,
+        onChainValue: onChain.sbuCode,
+        description: sbuOnChainMatch
+          ? 'SBU in PostgreSQL matches the IdentityRegistry'
+          : 'ALERT: SBU in PostgreSQL does NOT match the IdentityRegistry — potential cross-unit escalation detected',
+      });
+
+      // verifyIdentity() is false for any inactive record, so the hash check
+      // only means something while the identity is active on-chain.
+      if (onChain.isActive) {
+        report.verifications.push(
+          onChain.verified
+            ? {
+                check: 'ON_CHAIN_IDENTITY_REGISTRY',
+                status: 'ON_CHAIN_HASH_MATCH',
+                onChainClearance: onChain.clearanceLevel,
+                onChainSbu: onChain.sbuCode,
+                description: 'Identity hash and clearance confirmed on Ethereum Sepolia IdentityRegistry',
+              }
+            : {
+                check: 'ON_CHAIN_IDENTITY_REGISTRY',
+                status: 'ON_CHAIN_HASH_DRIFT',
+                description: 'ALERT: Identity hash in DB does NOT match on-chain IdentityRegistry hash',
+              }
+        );
+      }
     }
 
-    const allPassed = report.verifications.every((v) =>
-      ['HASH_MATCH', 'SBU_MATCH', 'ON_CHAIN_HASH_MATCH', 'SKIPPED'].includes(v.status)
-    );
-    report.verdict = allPassed ? 'INTEGRITY_OK' : 'INTEGRITY_COMPROMISED';
+    const compromised = report.verifications.some((v) => IDENTITY_DRIFT_STATUSES.has(v.status));
+    if (compromised) report.verdict = 'INTEGRITY_COMPROMISED';
+    else if (fetchFailed) report.verdict = 'VERIFICATION_ERROR';
+    else if (!user.dossierCid) report.verdict = 'PARTIAL';
+    else report.verdict = 'INTEGRITY_OK';
 
     return report;
+  },
+
+  /**
+   * DEMO ONLY: play the rogue insider. Rewrites one security-relevant value
+   * directly in the PostgreSQL cache, bypassing the application layer and the
+   * chain, so the audit check has a real discrepancy to catch. The forged value
+   * is deliberately not indexed anywhere: a genuine insider would not leave a
+   * trail either. Identity: clearanceLevel. Asset: classificationTier. The
+   * value flips to the far end of the 1-4 scale (4 unless it is already 4).
+   */
+  async simulateTamper({ kind, id }, actor) {
+    assertSimulationEnabled();
+    if (!prisma) throw new ApiError(503, 'Database unavailable');
+
+    if (kind === 'identity') {
+      const user = await findIdentity(id);
+      const forged = user.clearanceLevel === 4 ? 1 : 4;
+      await prisma.user.update({ where: { id: user.id }, data: { clearanceLevel: forged } });
+      logger.warn(`[TamperLab] ${actor?.walletAddress || actor?.id} forged clearance of ${user.walletAddress} in Postgres: ${user.clearanceLevel} -> ${forged}`);
+      return {
+        kind,
+        id: user.id,
+        label: user.displayName || user.externalId || user.id,
+        field: 'clearanceLevel',
+        before: user.clearanceLevel,
+        after: forged,
+      };
+    }
+
+    const asset = await findAsset(id);
+    const forged = asset.classificationTier === 4 ? 1 : 4;
+    await prisma.asset.update({ where: { id: asset.id }, data: { classificationTier: forged } });
+    logger.warn(`[TamperLab] ${actor?.walletAddress || actor?.id} forged classification of asset ${asset.id} in Postgres: ${asset.classificationTier} -> ${forged}`);
+    return {
+      kind,
+      id: asset.id,
+      label: asset.name,
+      field: 'classificationTier',
+      before: asset.classificationTier,
+      after: forged,
+    };
+  },
+
+  /**
+   * DEMO ONLY: undo a simulated tamper by copying the chain's value back into
+   * the cache. Never writes to the chain, and refuses when it cannot read the
+   * chain, so it can never "restore" a guess.
+   */
+  async restoreFromChain({ kind, id }, actor) {
+    assertSimulationEnabled();
+    if (!prisma) throw new ApiError(503, 'Database unavailable');
+
+    if (kind === 'identity') {
+      const user = await findIdentity(id);
+      const onChain = await chainService.verifyIdentityOnChain({
+        walletAddress: user.walletAddress,
+        identityHash: user.identityHash,
+      });
+      if (onChain.error) throw new ApiError(502, `Could not read the identity from the chain: ${onChain.error}`);
+      if (!onChain.isActive) {
+        throw new ApiError(409, 'This identity is not active on-chain, so there is no clearance to restore.');
+      }
+      await prisma.user.update({ where: { id: user.id }, data: { clearanceLevel: onChain.clearanceLevel } });
+      logger.warn(`[TamperLab] ${actor?.walletAddress || actor?.id} restored clearance of ${user.walletAddress} from chain: ${user.clearanceLevel} -> ${onChain.clearanceLevel}`);
+      return {
+        kind,
+        id: user.id,
+        label: user.displayName || user.externalId || user.id,
+        field: 'clearanceLevel',
+        before: user.clearanceLevel,
+        after: onChain.clearanceLevel,
+      };
+    }
+
+    const asset = await findAsset(id);
+    if (!asset.tokenId) throw new ApiError(409, 'This asset has no on-chain token to restore from.');
+    const onChain = await chainService.getAssetOnChain(asset.tokenId);
+    if (!onChain.found) {
+      throw new ApiError(502, onChain.error || `Token #${asset.tokenId} could not be read from the chain`);
+    }
+    const tier = Number(onChain.classificationTier);
+    await prisma.asset.update({ where: { id: asset.id }, data: { classificationTier: tier } });
+    logger.warn(`[TamperLab] ${actor?.walletAddress || actor?.id} restored classification of asset ${asset.id} from chain: ${asset.classificationTier} -> ${tier}`);
+    return {
+      kind,
+      id: asset.id,
+      label: asset.name,
+      field: 'classificationTier',
+      before: asset.classificationTier,
+      after: tier,
+    };
   },
 
   /**

@@ -1,7 +1,8 @@
 import ApiError from '../utils/ApiError.js';
 
 const validate = (schema, source = 'body') => (req, res, next) => {
-  const result = schema.safeParse(req[source]);
+  // Express 5 leaves req.body undefined when a request carries no body.
+  const result = schema.safeParse(req[source] ?? {});
 
   if (!result.success) {
     const message = result.error.issues

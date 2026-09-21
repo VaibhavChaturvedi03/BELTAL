@@ -1,7 +1,9 @@
 import express from 'express';
 import authController from '../controllers/auth.controller.js';
 import validate from '../middleware/validate.js';
-import { nonceSchema, verifySchema } from '../validators/auth.validator.js';
+import { authenticateUnregistered } from '../middleware/auth.middleware.js';
+import { registrationSubmitLimiter, registrationStatusLimiter } from '../middleware/registrationRateLimit.js';
+import { nonceSchema, verifySchema, registerSchema } from '../validators/auth.validator.js';
 
 const router = express.Router();
 
@@ -17,5 +19,22 @@ router.post('/login', validate(verifySchema), authController.verify);
 // here rather than /verify, since /verify explicitly rejects
 // SYSTEM_CONNECTOR identities.
 router.post('/system-connector/verify', validate(verifySchema), authController.verifySystemConnector);
+
+// Self-registration for wallets with no identity yet. Only the limited
+// (unregistered) session is accepted here; every other route rejects it. Each has
+// its own per-IP limiter, applied before authentication so floods are cut early.
+router.post(
+  '/register',
+  registrationSubmitLimiter,
+  authenticateUnregistered,
+  validate(registerSchema),
+  authController.register
+);
+router.get(
+  '/registration-status',
+  registrationStatusLimiter,
+  authenticateUnregistered,
+  authController.registrationStatus
+);
 
 export default router;
