@@ -467,9 +467,27 @@ export const chainService = {
   },
 
   /**
-   * Reassign soulbound asset custody on-chain (Issue #89)
+   * Reassign soulbound asset custody on-chain with EIP-712 typed-data signature (Issue #100).
+   *
+   * The function supports two signing paths:
+   *   (a) `signature` is provided pre-built (e.g. custodian signed via MetaMask on the frontend).
+   *   (b) `custodianPrivateKey` is provided — the backend builds and signs the EIP-712 payload
+   *       server-side (automated / test scenarios).
+   *
+   * If neither `signature` nor `custodianPrivateKey` is provided the call falls back to the
+   * admin-bypass `reassignCustody()` function (no EIP-712 check, onlyAuthorized gate only).
+   * This path is intentional for emergency admin reassignments; it is clearly attributed in
+   * the on-chain CustodyRecord (empty signature) and the AuditLog.
+   *
+   * @param {object} params
+   * @param {string}  params.tokenId                 - On-chain token ID (string or bigint)
+   * @param {string}  params.newCustodianWallet       - New custodian Ethereum address
+   * @param {string}  [params.reason]                 - Human-readable reason stored on-chain
+   * @param {string}  [params.signature]              - Pre-built 65-byte hex EIP-712 signature
+   * @param {string}  [params.custodianPrivateKey]    - Raw hex private key to sign server-side
+   * @param {number}  [params.deadline]               - Unix timestamp (default: now + 1 hour)
    */
-  async reassignCustodyOnChain({ tokenId, newCustodianWallet, reason, signature }) {
+  async reassignCustodyOnChain({ tokenId, newCustodianWallet, reason, signature, custodianPrivateKey, deadline }) {
     const contract = this.getAssetContract(true);
     if (!contract || !tokenId) {
       logger.warn(`On-chain custody reassignment skipped for token #${tokenId} — contract not present.`);
@@ -477,12 +495,81 @@ export const chainService = {
     }
 
     try {
-      const sigBytes = signature ? ethers.getBytes(signature) : '0x';
+      // If no custodian signature is available, fall back to the admin-bypass path
+      // (reassignCustody — no EIP-712 check, onlyAuthorized only).
+      if (!signature && !custodianPrivateKey) {
+        logger.warn(
+          `reassignCustodyOnChain: no custodian signature or private key supplied for token #${tokenId} — ` +
+          `falling back to admin-bypass reassignCustody(). ` +
+          `This will store an empty signature in custodyHistory (bypass marker).`
+        );
+        const tx = await contract.reassignCustody(
+          BigInt(tokenId),
+          newCustodianWallet,
+          reason || 'ADMIN_BYPASS_HANDOVER'
+        );
+        const receipt = await tx.wait();
+        logger.info(`Custody admin-bypassed on Sepolia: Token #${tokenId} -> ${newCustodianWallet}, Tx: ${receipt.hash}`);
+        return { txHash: receipt.hash, blockNumber: receipt.blockNumber, confirmed: true };
+      }
+
+      // Determine the effective deadline (default: 1 hour from now)
+      const effectiveDeadline = deadline ?? (Math.floor(Date.now() / 1000) + 3600);
+
+      // If a pre-built signature is not already provided, build and sign it server-side
+      if (!signature) {
+        // Read the deployment chain and contract address for the EIP-712 domain
+        const network = await contract.runner.provider.getNetwork();
+        const chainId = Number(network.chainId);
+        const assetNFTAddress = await contract.getAddress();
+
+        // Read the current on-chain nonce for this token (replay-prevention)
+        const nonce = await contract.custodyNonces(BigInt(tokenId));
+
+        // Build the custodian signer from the provided raw private key
+        const custodianSigner = new ethers.Wallet(
+          custodianPrivateKey.startsWith('0x') ? custodianPrivateKey : `0x${custodianPrivateKey}`,
+          contract.runner.provider
+        );
+
+        // EIP-712 domain matching the contract constructor
+        const domain = {
+          name: 'TrustChain BEL Defence Asset',
+          version: '1',
+          chainId,
+          verifyingContract: assetNFTAddress,
+        };
+
+        // CustodyTransfer typed data struct
+        const types = {
+          CustodyTransfer: [
+            { name: 'tokenId',  type: 'uint256' },
+            { name: 'from',     type: 'address' },
+            { name: 'to',       type: 'address' },
+            { name: 'nonce',    type: 'uint256' },
+            { name: 'deadline', type: 'uint256' },
+          ],
+        };
+
+        const value = {
+          tokenId: BigInt(tokenId),
+          from: custodianSigner.address,
+          to: newCustodianWallet,
+          nonce,
+          deadline: BigInt(effectiveDeadline),
+        };
+
+        signature = await custodianSigner.signTypedData(domain, types, value);
+        logger.info(`EIP-712 CustodyTransfer signed by ${custodianSigner.address} for token #${tokenId}`);
+      }
+
+      // Call the full verification path: transferCustody(tokenId, newCustodian, reason, deadline, sig)
       const tx = await contract.transferCustody(
         BigInt(tokenId),
         newCustodianWallet,
         reason || 'AUTHORIZED_HANDOVER',
-        sigBytes
+        BigInt(effectiveDeadline),
+        signature
       );
       const receipt = await tx.wait();
 
@@ -497,6 +584,7 @@ export const chainService = {
       return { txHash: null, blockNumber: null, confirmed: false, error: err.message };
     }
   },
+
 
   /**
    * Read-only view call: fetch on-chain asset details and current custodian
