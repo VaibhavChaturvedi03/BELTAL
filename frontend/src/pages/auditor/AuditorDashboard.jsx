@@ -1,10 +1,20 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { auditApi } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { useToast } from '../../components/ui/Toast';
 import Card, { CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
+import AuditAssistantPanel from '../../components/auditor/AuditAssistantPanel';
+import useBlockNumber from '../../hooks/useBlockNumber';
+import {
+    AUDIT_EVENT_TYPES,
+    getActionIcon,
+    getActionColor,
+    formatAuditDate,
+} from '../../config/auditEvents';
 
 export default function AuditorDashboard() {
     const { user } = useAuth();
+    const toast = useToast();
     const [stats, setStats] = useState({
         identityCreated: 0,
         roleChanged: 0,
@@ -13,69 +23,53 @@ export default function AuditorDashboard() {
     });
     const [auditEvents, setAuditEvents] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const [verifying, setVerifying] = useState(null);
+    const blockNumber = useBlockNumber();
     const [filters, setFilters] = useState({
         startDate: '',
         endDate: '',
         actionType: '',
     });
 
-    useEffect(() => {
-        loadData();
-    }, [filters]);
-
-    const loadData = async () => {
+    const loadData = useCallback(async () => {
         setLoading(true);
+        setError(null);
         try {
             const [statsData, eventsData] = await Promise.all([
                 auditApi.getStats(filters),
                 auditApi.list({ ...filters, limit: 20 }),
             ]);
             setStats(statsData);
-            setAuditEvents(eventsData.events || eventsData || []);
+            setAuditEvents(eventsData.events);
         } catch (err) {
             console.error("Failed to load audit data", err);
+            setError(err?.uiMessage || 'The audit trail could not be loaded.');
         } finally {
             setLoading(false);
         }
-    };
+    }, [filters]);
+
+    useEffect(() => {
+        loadData();
+    }, [loadData]);
 
     const handleFilterChange = (key, value) => {
         setFilters(prev => ({ ...prev, [key]: value }));
     };
 
-    const getActionIcon = (actionType) => {
-        const icons = {
-            IDENTITY_CREATED: 'person_add',
-            ROLE_CHANGED: 'admin_panel_settings',
-            ASSET_MINTED: 'token',
-            TRANSFER_EXECUTED: 'swap_horiz',
-            TRANSFER_REQUESTED: 'swap_horiz',
-            BADGE_TAP: 'badge',
-        };
-        return icons[actionType] || 'event';
-    };
-
-    const getActionColor = (actionType) => {
-        const colors = {
-            IDENTITY_CREATED: 'text-emerald-400',
-            ROLE_CHANGED: 'text-blue-400',
-            ASSET_MINTED: 'text-amber-400',
-            TRANSFER_EXECUTED: 'text-purple-400',
-            TRANSFER_REQUESTED: 'text-orange-400',
-            BADGE_TAP: 'text-pink-400',
-        };
-        return colors[actionType] || 'text-slate-400';
-    };
-
-    const formatDate = (dateString) => {
-        const date = new Date(dateString);
-        return date.toLocaleString('en-IN', {
-            day: '2-digit',
-            month: 'short',
-            year: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit',
-        });
+    const handleVerify = async (event) => {
+        setVerifying(event.id);
+        try {
+            const result = await auditApi.verify(event.id);
+            const message = result.message || (result.verified ? 'Record verified' : 'Record could not be verified');
+            if (result.verified) toast.success(message, 'Verified on-chain');
+            else toast.warning(message, 'Not verified');
+        } catch (err) {
+            toast.error(err.uiMessage || err.message, 'Verification failed');
+        } finally {
+            setVerifying(null);
+        }
     };
 
     const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 18 ? 'Good afternoon' : 'Good evening';
@@ -86,13 +80,13 @@ export default function AuditorDashboard() {
                 <div className="relative z-10">
                     <div className="auditor-eyebrow"><span className="h-2 w-2 rounded-full bg-[#E8CC71]" /> AUDITOR CLEARANCE · READ-ONLY ACCESS</div>
                     <p className="mt-5 text-sm font-semibold text-[#C5DDF7]">{greeting},</p>
-                    <h1>Welcome, <span>{user?.displayName || 'Auditor'}</span>.</h1>
+                    <h1>Welcome, <span>{user?.displayName || user?.name || 'Auditor'}</span>.</h1>
                     <p className="auditor-welcome-copy">Monitor ledger activity, verify records, and maintain a trusted audit trail from one clear workspace.</p>
                 </div>
                 <div className="auditor-status-card relative z-10">
                     <div className="flex items-center justify-between border-b border-white/15 pb-3">
                         <span className="flex items-center gap-2 text-[11px] font-bold tracking-wider text-white"><span className="h-2.5 w-2.5 animate-pulse rounded-full bg-emerald-400" /> LEDGER ONLINE</span>
-                        <span className="font-mono text-[10px] text-[#C5DDF7]">#4,928,192</span>
+                        <span className="font-mono text-[10px] text-[#C5DDF7]">{blockNumber === null ? 'RPC offline' : `#${blockNumber.toLocaleString()}`}</span>
                     </div>
                     <div className="mt-3 grid grid-cols-2 gap-3">
                         <div><p className="text-[10px] font-bold tracking-wider text-[#A9BFDE]">ACCESS LEVEL</p><p className="mt-1 text-sm font-bold text-white">Auditor</p></div>
@@ -101,17 +95,11 @@ export default function AuditorDashboard() {
                 </div>
             </section>
 
-            {/* Legacy header replaced by the focused welcome panel above. */}
-            <div className="hidden">
-                <span className="h-px flex-1 bg-gradient-to-r from-[#D4AF37]/40 to-transparent" />
-                <span className="text-[9px] font-black tracking-[0.22em] text-[#D4AF37]/60 uppercase">
-                    ◈ AUDITOR CLEARANCE — READ-ONLY ACCESS
-                </span>
-                <span className="h-px flex-1 bg-gradient-to-l from-[#D4AF37]/40 to-transparent" />
-            </div>
-
-            <h1 className="text-2xl font-black text-white tracking-wide">Auditor Dashboard</h1>
+            <h2 className="text-2xl font-black text-white tracking-wide">Auditor Dashboard</h2>
             <p className="text-sm text-slate-400">Audit trail overview and verification tools</p>
+
+            {/* Renders nothing when the server has no assistant configured. */}
+            <AuditAssistantPanel />
 
             {/* Stats Grid */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -164,10 +152,11 @@ export default function AuditorDashboard() {
                 <CardContent>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
-                            <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                            <label htmlFor="audit-start-date" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                                 Start Date
                             </label>
                             <input
+                                id="audit-start-date"
                                 type="date"
                                 value={filters.startDate}
                                 onChange={(e) => handleFilterChange('startDate', e.target.value)}
@@ -176,10 +165,11 @@ export default function AuditorDashboard() {
                         </div>
 
                         <div>
-                            <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                            <label htmlFor="audit-end-date" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                                 End Date
                             </label>
                             <input
+                                id="audit-end-date"
                                 type="date"
                                 value={filters.endDate}
                                 onChange={(e) => handleFilterChange('endDate', e.target.value)}
@@ -188,26 +178,25 @@ export default function AuditorDashboard() {
                         </div>
 
                         <div>
-                            <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                            <label htmlFor="audit-action-type" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                                 Action Type
                             </label>
                             <select
+                                id="audit-action-type"
                                 value={filters.actionType}
                                 onChange={(e) => handleFilterChange('actionType', e.target.value)}
                                 className="w-full bg-[#0D1F38] border border-[#1F293D] rounded px-3 py-2 text-sm text-white focus:border-[#D4AF37] outline-none"
                             >
                                 <option value="">All Actions</option>
-                                <option value="IDENTITY_CREATED">Identity Created</option>
-                                <option value="ROLE_CHANGED">Role Changed</option>
-                                <option value="ASSET_MINTED">Asset Minted</option>
-                                <option value="TRANSFER_EXECUTED">Transfer Executed</option>
-                                <option value="TRANSFER_REQUESTED">Transfer Requested</option>
-                                <option value="BADGE_TAP">Badge Tap</option>
+                                {AUDIT_EVENT_TYPES.map((type) => (
+                                    <option key={type.value} value={type.value}>{type.label}</option>
+                                ))}
                             </select>
                         </div>
                     </div>
 
                     <button
+                        type="button"
                         onClick={() => setFilters({ startDate: '', endDate: '', actionType: '' })}
                         className="mt-4 px-4 py-2 text-xs font-bold text-slate-400 hover:text-white border border-[#1F293D] hover:border-[#D4AF37] rounded transition-colors"
                     >
@@ -222,6 +211,13 @@ export default function AuditorDashboard() {
                     <CardTitle>Recent Audit Activity</CardTitle>
                 </CardHeader>
                 <CardContent>
+                    {error && (
+                        <div className="mb-4 rounded-lg border border-red-500/40 p-4 text-sm text-red-400" role="alert">
+                            <p className="font-bold">Unable to load the audit trail</p>
+                            <p className="mt-1 text-xs">{error}</p>
+                            <button type="button" onClick={loadData} className="mt-3 text-xs font-bold underline">Retry</button>
+                        </div>
+                    )}
                     {loading ? (
                         <p className="text-slate-400 text-center py-8">Loading audit trail...</p>
                     ) : (
@@ -272,14 +268,16 @@ export default function AuditorDashboard() {
                                                     {event.txHash?.slice(0, 10)}...{event.txHash?.slice(-8)}
                                                 </td>
                                                 <td className="px-4 py-3 text-xs text-slate-400">
-                                                    {formatDate(event.timestamp || event.createdAt)}
+                                                    {formatAuditDate(event.timestamp)}
                                                 </td>
                                                 <td className="px-4 py-3">
                                                     <button
-                                                        onClick={() => handleVerify(event.id)}
-                                                        className="px-3 py-1.5 bg-[#1E5FA8] hover:bg-[#164a85] text-white text-xs font-bold rounded transition-colors"
+                                                        type="button"
+                                                        onClick={() => handleVerify(event)}
+                                                        disabled={verifying === event.id}
+                                                        className="px-3 py-1.5 bg-[#1E5FA8] hover:bg-[#164a85] text-white text-xs font-bold rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                                     >
-                                                        Verify
+                                                        {verifying === event.id ? 'Verifying...' : 'Verify'}
                                                     </button>
                                                 </td>
                                             </tr>
@@ -293,13 +291,4 @@ export default function AuditorDashboard() {
             </Card>
         </div>
     );
-
-    async function handleVerify(id) {
-        try {
-            const result = await auditApi.verify(id);
-            alert(`Verification successful!\n\nOn-chain match: ${result.verified ? '✓' : '✗'}\nDetails: ${result.message || 'Record verified'}`);
-        } catch (err) {
-            alert(`Verification failed: ${err.uiMessage || err.message}`);
-        }
-    }
 }

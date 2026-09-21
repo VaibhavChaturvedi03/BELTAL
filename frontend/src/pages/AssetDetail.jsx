@@ -1,38 +1,36 @@
-import { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { useAuth } from '../../context/AuthContext';
-import { assetApi, transferApi } from '../../services/api';
-import Card, { CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
+import useAssetDetail from '../hooks/useAssetDetail';
+import { useAuth } from '../context/AuthContext';
+import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
+import { TierBadge } from '../components/ui/Badge';
+
+const isApproved = (status) => status === 'APPROVED' || status === 'EXECUTED';
+
+/**
+ * Shared asset detail screen (issues #66/#68). Routed at /assets/:id for every
+ * authenticated role — an admin auditing the ledger, a manager reviewing team
+ * equipment and the custodian themselves all read the same record, so the page
+ * only varies the breadcrumb it returns to and whether the custodian-only
+ * "Request Transfer" action is offered.
+ */
+const BACK_BY_ROLE = {
+    ADMIN: { to: '/admin/assets', label: 'Asset Ledger' },
+    MANAGER: { to: '/team-assets', label: 'Team Assets' },
+    AUDITOR: { to: '/audit/explorer', label: 'Audit Trail' },
+    USER: { to: '/my-assets', label: 'My Assets' },
+};
 
 export default function AssetDetail() {
     const { id } = useParams();
     const navigate = useNavigate();
     const { user } = useAuth();
-    const [asset, setAsset] = useState(null);
-    const [history, setHistory] = useState([]);
-    const [loading, setLoading] = useState(true);
+    const { asset, history, loading, error } = useAssetDetail(id);
 
-    useEffect(() => {
-        fetchAssetDetail();
-    }, [id]);
-
-    const fetchAssetDetail = async () => {
-        setLoading(true);
-        try {
-            // Fetch asset details
-            const data = await assetApi.list({ id: id });
-            const foundAsset = data.assets?.[0];
-            setAsset(foundAsset);
-
-            // Fetch ownership history (transfers for this asset)
-            const transfersData = await transferApi.list({ assetId: id });
-            setHistory(transfersData.transfers || []);
-        } catch (err) {
-            console.error("Failed to fetch asset detail", err);
-        } finally {
-            setLoading(false);
-        }
-    };
+    const back = BACK_BY_ROLE[user?.role] || BACK_BY_ROLE.USER;
+    // Only the current custodian can raise a transfer request for an asset;
+    // managers and admins start one from the Initiate Transfer screen instead.
+    const canRequestTransfer =
+        Boolean(asset) && asset.owner?.walletAddress === user?.walletAddress;
 
     const getStatusColor = (status) => {
         switch (status?.toUpperCase()) {
@@ -63,12 +61,12 @@ export default function AssetDetail() {
                             <span className="material-symbols-outlined text-6xl text-red-500/50 mb-3">
                                 error
                             </span>
-                            <p className="text-slate-400 text-sm">Asset not found</p>
+                            <p className="text-slate-400 text-sm" role={error ? 'alert' : undefined}>{error || 'Asset not found'}</p>
                             <button
-                                onClick={() => navigate('/my-assets')}
+                                onClick={() => navigate(back.to)}
                                 className="mt-4 px-4 py-2 bg-[#1E5FA8] hover:bg-[#164a85] text-white text-xs font-bold rounded"
                             >
-                                Back to My Assets
+                                Back to {back.label}
                             </button>
                         </div>
                     </CardContent>
@@ -81,8 +79,8 @@ export default function AssetDetail() {
         <div className="user-console min-h-full p-6 sm:p-8 space-y-6">
             {/* Breadcrumb */}
             <div className="flex items-center gap-2 text-xs text-slate-400">
-                <Link to="/my-assets" className="hover:text-emerald-400 transition-colors">
-                    My Assets
+                <Link to={back.to} className="hover:text-emerald-400 transition-colors">
+                    {back.label}
                 </Link>
                 <span className="material-symbols-outlined text-[14px]">chevron_right</span>
                 <span className="text-white font-medium truncate max-w-[300px]">
@@ -107,14 +105,16 @@ export default function AssetDetail() {
                     </p>
                 </div>
                 <div className="flex gap-2">
+                    {canRequestTransfer && (
+                        <button
+                            onClick={() => navigate(`/transfer/request?asset=${asset.id}`)}
+                            className="px-4 py-2 bg-[#1E5FA8] hover:bg-[#164a85] text-white text-xs font-bold rounded transition-colors"
+                        >
+                            Request Transfer
+                        </button>
+                    )}
                     <button
-                        onClick={() => navigate(`/transfer/request?asset=${asset.id}`)}
-                        className="px-4 py-2 bg-[#1E5FA8] hover:bg-[#164a85] text-white text-xs font-bold rounded transition-colors"
-                    >
-                        Request Transfer
-                    </button>
-                    <button
-                        onClick={() => navigate('/my-assets')}
+                        onClick={() => navigate(back.to)}
                         className="px-4 py-2 border border-[#1F293D] hover:border-emerald-500/50 text-slate-300 text-xs font-bold rounded transition-colors"
                     >
                         Back
@@ -146,7 +146,7 @@ export default function AssetDetail() {
 
                                 <div className="p-3 rounded bg-[#0D1F38] border border-[#1F293D]">
                                     <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Classification Tier</div>
-                                    <div className="text-white text-sm font-bold">Tier {asset.classificationTier}</div>
+                                    <TierBadge tier={asset.classificationTier} className="text-xs" />
                                 </div>
 
                                 <div className="p-3 rounded bg-[#0D1F38] border border-[#1F293D]">
@@ -210,7 +210,7 @@ export default function AssetDetail() {
                                             {/* Timeline dot */}
                                             <div className="absolute left-0 top-1 w-6 h-6 rounded-full bg-[#1E5FA8] border-2 border-[#060D1A] flex items-center justify-center">
                                                 <span className="material-symbols-outlined text-[12px] text-white">
-                                                    {transfer.status === 'APPROVED' ? 'check' : transfer.status === 'REJECTED' ? 'close' : 'pending'}
+                                                    {isApproved(transfer.status) ? 'check' : transfer.status === 'REJECTED' ? 'close' : 'pending'}
                                                 </span>
                                             </div>
                                             {/* Content */}
@@ -226,7 +226,7 @@ export default function AssetDetail() {
                                                             {new Date(transfer.createdAt).toLocaleString('en-IN')}
                                                         </div>
                                                     </div>
-                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${transfer.status === 'APPROVED'
+                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${isApproved(transfer.status)
                                                         ? 'bg-emerald-900/50 text-emerald-400'
                                                         : transfer.status === 'REJECTED'
                                                             ? 'bg-red-900/50 text-red-400'
@@ -288,17 +288,27 @@ export default function AssetDetail() {
                             <CardTitle>Actions</CardTitle>
                         </CardHeader>
                         <CardContent className="space-y-2">
+                            {canRequestTransfer && (
+                                <button
+                                    onClick={() => navigate(`/transfer/request?asset=${asset.id}`)}
+                                    className="w-full px-3 py-2 bg-[#1E5FA8] hover:bg-[#164a85] text-white text-xs font-bold rounded transition-colors"
+                                >
+                                    Request Transfer
+                                </button>
+                            )}
+                            {(user?.role === 'ADMIN' || user?.role === 'AUDITOR') && (
+                                <button
+                                    onClick={() => navigate(`/audit/verify?asset=${asset.id}`)}
+                                    className="w-full px-3 py-2 border border-[#1F293D] hover:border-emerald-500/50 text-slate-300 text-xs font-bold rounded transition-colors"
+                                >
+                                    Verify on-chain
+                                </button>
+                            )}
                             <button
-                                onClick={() => navigate(`/transfer/request?asset=${asset.id}`)}
-                                className="w-full px-3 py-2 bg-[#1E5FA8] hover:bg-[#164a85] text-white text-xs font-bold rounded transition-colors"
-                            >
-                                Request Transfer
-                            </button>
-                            <button
-                                onClick={() => navigate('/my-assets')}
+                                onClick={() => navigate(back.to)}
                                 className="w-full px-3 py-2 border border-[#1F293D] hover:border-emerald-500/50 text-slate-300 text-xs font-bold rounded transition-colors"
                             >
-                                Back to Assets
+                                Back to {back.label}
                             </button>
                         </CardContent>
                     </Card>

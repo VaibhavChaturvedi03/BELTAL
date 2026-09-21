@@ -1,4 +1,5 @@
 import authService from '../services/auth.service.js';
+import registrationService from '../services/registration.service.js';
 
 export const authController = {
   /**
@@ -50,6 +51,33 @@ export const authController = {
         success: true,
         data: result,
       });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  /**
+   * Submit a registration request from a limited (unregistered) session.
+   * A bootstrap admin (ADMIN_WALLETS) is approved immediately and gets a full session back.
+   * POST /api/auth/register
+   */
+  async register(req, res, next) {
+    try {
+      const result = await registrationService.submit(req.user.walletAddress, req.body);
+      return res.status(result.status === 'APPROVED' ? 200 : 201).json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  /**
+   * Registration status for the limited session; includes a full session once approved.
+   * GET /api/auth/registration-status
+   */
+  async registrationStatus(req, res, next) {
+    try {
+      const result = await registrationService.getStatus(req.user.walletAddress);
+      return res.status(200).json({ success: true, data: result });
     } catch (err) {
       next(err);
     }

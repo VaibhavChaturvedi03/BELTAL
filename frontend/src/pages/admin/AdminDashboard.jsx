@@ -180,12 +180,12 @@ export default function AdminDashboard() {
       <CreateIdentityModal
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={() => {
+        onSuccess={() => {
           setRefreshTick((t) => t + 1);
           fetchStats();
         }}
       />
-      <MintAssetModal open={mintOpen} onClose={() => setMintOpen(false)} />
+      <MintAssetModal open={mintOpen} onClose={() => setMintOpen(false)} onSuccess={fetchStats} />
     </div>
   );
 }

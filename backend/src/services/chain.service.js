@@ -31,6 +31,17 @@ const identityRegistryAbi = loadAbi('IdentityRegistry');
 const accessControlAbi = loadAbi('AccessControl');
 const assetNftAbi = loadAbi('AssetNFT');
 
+// App-level roles (Role enum) -> the AccessControl.sol role constants they map
+// to. The contract hashes its own names (ROLE_SUPER_ADMIN, ROLE_SBU_MANAGER,
+// ROLE_EMPLOYEE), so `ROLE_<APP ROLE>` would grant a hash nothing checks.
+const CONTRACT_ROLE_NAMES = {
+  ADMIN: 'ROLE_SUPER_ADMIN',
+  MANAGER: 'ROLE_SBU_MANAGER',
+  AUDITOR: 'ROLE_AUDITOR',
+  USER: 'ROLE_EMPLOYEE',
+  SYSTEM_CONNECTOR: 'ROLE_SYSTEM_CONNECTOR',
+};
+
 function isConfigured() {
   return Boolean(provider && config.contractAddress && assetNftAbi);
 }
@@ -138,6 +149,63 @@ export const chainService = {
   },
 
   /**
+   * Grant the AccessControl role that an app-level role maps to. grantRole only
+   * sets a flag, so repeating it is harmless: updateRole relies on that to
+   * finish a grant that failed right after registerIdentityOnChain.
+   */
+  async grantRoleOnChain({ walletAddress, role }) {
+    const contract = this.getAccessControlContract(true);
+    if (!contract) {
+      logger.warn(`On-chain role grant skipped for ${walletAddress} — AccessControl contract not configured.`);
+      return { txHash: null, blockNumber: null, confirmed: false };
+    }
+
+    try {
+      const contractRole = CONTRACT_ROLE_NAMES[String(role).toUpperCase()];
+      if (!contractRole) throw new Error(`No on-chain role mapping for ${role}`);
+      const roleBytes32 = ethers.keccak256(ethers.toUtf8Bytes(contractRole));
+      const tx = await contract.grantRole(roleBytes32, walletAddress);
+      const receipt = await tx.wait();
+
+      logger.info(`Role ${role} granted on Ethereum Sepolia to ${walletAddress}, Tx: ${receipt.hash}`);
+      return { txHash: receipt.hash, blockNumber: receipt.blockNumber, confirmed: true };
+    } catch (err) {
+      logger.error(`On-chain role grant failed: ${err.message}`);
+      return { txHash: null, blockNumber: null, confirmed: false, error: err.message };
+    }
+  },
+
+  /**
+   * Strip the AccessControl role an app-level role maps to. Revoking an
+   * identity deactivates it in IdentityRegistry, but role checks
+   * (AssetNFT mint/transfer authorisation, admin-only setters) read
+   * AccessControl.hasRole, so a revoked wallet keeps its powers on-chain until
+   * the role is removed too. revokeRole only clears a flag, so repeating it is
+   * harmless.
+   */
+  async revokeRoleOnChain({ walletAddress, role }) {
+    const contract = this.getAccessControlContract(true);
+    if (!contract) {
+      logger.warn(`On-chain role revoke skipped for ${walletAddress} — AccessControl contract not configured.`);
+      return { txHash: null, blockNumber: null, confirmed: false };
+    }
+
+    try {
+      const contractRole = CONTRACT_ROLE_NAMES[String(role).toUpperCase()];
+      if (!contractRole) throw new Error(`No on-chain role mapping for ${role}`);
+      const roleBytes32 = ethers.keccak256(ethers.toUtf8Bytes(contractRole));
+      const tx = await contract.revokeRole(roleBytes32, walletAddress);
+      const receipt = await tx.wait();
+
+      logger.info(`Role ${role} revoked on Ethereum Sepolia from ${walletAddress}, Tx: ${receipt.hash}`);
+      return { txHash: receipt.hash, blockNumber: receipt.blockNumber, confirmed: true };
+    } catch (err) {
+      logger.error(`On-chain role revoke failed: ${err.message}`);
+      return { txHash: null, blockNumber: null, confirmed: false, error: err.message };
+    }
+  },
+
+  /**
    * Batch register employee identities on-chain (supports up to 250 records)
    */
   async batchRegisterIdentitiesOnChain({ users, dids, hashes, clearances, sbus }) {
@@ -173,9 +241,31 @@ export const chainService = {
   },
 
   /**
+   * Revoke (quarantine) an identity on-chain. Used by guardian recovery to
+   * retire the lost wallet before the same DID is re-anchored to a new one,
+   * and available for straightforward revocation too.
+   */
+  async revokeIdentityOnChain({ walletAddress, reason }) {
+    const contract = this.getIdentityContract(true);
+    if (!contract) {
+      return { confirmed: false, error: 'IdentityRegistry contract not configured' };
+    }
+
+    try {
+      const tx = await contract.revokeIdentity(walletAddress, reason || 'Revoked by administrator');
+      const receipt = await tx.wait();
+      logger.info(`Identity ${walletAddress} revoked on Sepolia, Tx: ${receipt.hash}`);
+      return { txHash: receipt.hash, blockNumber: receipt.blockNumber, confirmed: true };
+    } catch (err) {
+      logger.error(`On-chain identity revocation failed: ${err.message}`);
+      return { confirmed: false, error: err.message };
+    }
+  },
+
+  /**
    * Update clearance level on-chain (Issue #87)
    */
-  async assignRoleOnChain({ walletAddress, role, clearanceLevel }) {
+  async assignRoleOnChain({ walletAddress, role, previousRole, clearanceLevel }) {
     const identityContract = this.getIdentityContract(true);
     const accessContract = this.getAccessControlContract(true);
 
@@ -184,6 +274,7 @@ export const chainService = {
       return { txHash: null, blockNumber: null, confirmed: false };
     }
 
+    let roleGranted = false;
     try {
       let txHash = null;
       let blockNumber = null;
@@ -196,17 +287,32 @@ export const chainService = {
       }
 
       if (role && accessContract) {
-        const roleBytes32 = ethers.keccak256(ethers.toUtf8Bytes(`ROLE_${role.toUpperCase()}`));
+        const contractRole = CONTRACT_ROLE_NAMES[String(role).toUpperCase()];
+        if (!contractRole) throw new Error(`No on-chain role mapping for ${role}`);
+        const roleBytes32 = ethers.keccak256(ethers.toUtf8Bytes(contractRole));
         const tx2 = await accessContract.grantRole(roleBytes32, walletAddress);
         const receipt2 = await tx2.wait();
         txHash = receipt2.hash;
         blockNumber = receipt2.blockNumber;
+        roleGranted = true;
+
+        // Grant first, then revoke, so a failed revoke never leaves the wallet role-less.
+        const oldContractRole = previousRole && previousRole !== role
+          ? CONTRACT_ROLE_NAMES[String(previousRole).toUpperCase()]
+          : null;
+        if (oldContractRole) {
+          const oldRoleBytes32 = ethers.keccak256(ethers.toUtf8Bytes(oldContractRole));
+          const tx3 = await accessContract.revokeRole(oldRoleBytes32, walletAddress);
+          const receipt3 = await tx3.wait();
+          txHash = receipt3.hash;
+          blockNumber = receipt3.blockNumber;
+        }
       }
 
-      return { txHash, blockNumber, confirmed: true };
+      return { txHash, blockNumber, confirmed: true, roleGranted };
     } catch (err) {
       logger.error(`On-chain role/clearance update failed: ${err.message}`);
-      return { txHash: null, blockNumber: null, confirmed: false, error: err.message };
+      return { txHash: null, blockNumber: null, confirmed: false, roleGranted, error: err.message };
     }
   },
 
@@ -251,6 +357,36 @@ export const chainService = {
       return { allowed, reason };
     } catch (err) {
       return { allowed: false, reason: err.message };
+    }
+  },
+
+  /**
+   * Admin: create or update a facility zone on-chain via AccessControl.createZone.
+   * A null/omitted `sbu` maps to the contract's "ALL" (any SBU) sentinel. Note
+   * the contract resets the zone's lockdown flag when it is (re)configured.
+   */
+  async configureZoneOnChain({ zoneId, requiredClearance, sbu }) {
+    const contract = this.getAccessControlContract(true);
+    if (!contract) {
+      logger.warn(`On-chain zone configuration skipped for zone ${zoneId} — AccessControl contract not configured.`);
+      return { txHash: null, blockNumber: null, confirmed: false };
+    }
+
+    try {
+      const zoneBytes32 = ethers.encodeBytes32String(zoneId.slice(0, 31));
+      const sbuBytes32 = ethers.encodeBytes32String(sbu ? sbu.slice(0, 31) : 'ALL');
+      const tx = await contract.createZone(zoneBytes32, requiredClearance, sbuBytes32);
+      const receipt = await tx.wait();
+
+      logger.info(`Zone ${zoneId} configured on Ethereum Sepolia (clearance ${requiredClearance}, SBU ${sbu || 'ALL'}), Tx: ${receipt.hash}`);
+      return {
+        txHash: receipt.hash,
+        blockNumber: receipt.blockNumber,
+        confirmed: true,
+      };
+    } catch (err) {
+      logger.error(`On-chain zone configuration failed: ${err.message}`);
+      return { txHash: null, blockNumber: null, confirmed: false, error: err.message };
     }
   },
 

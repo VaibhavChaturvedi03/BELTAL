@@ -59,7 +59,7 @@ function AccountMenu({ user, logout }) {
       {open && (
         <div role="menu" className="absolute right-0 mt-2 w-56 overflow-hidden rounded-lg border border-slate-200 bg-white py-1 shadow-xl">
           <div className="border-b border-slate-100 px-4 py-3">
-            <p className="text-sm font-bold text-[#0B2545]">{user?.displayName || 'Officer'}</p>
+            <p className="text-sm font-bold text-[#0B2545]">{user?.displayName || user?.name || 'Officer'}</p>
             <p className="mt-1 text-[10px] font-bold tracking-wider text-[#A37E2C]">{user?.role || 'USER'}</p>
           </div>
           <button role="menuitem" onClick={() => go(dashboardPath)} className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-slate-50">
@@ -103,6 +103,7 @@ export default function SiteHeader({ mode = 'home' }) {
           <Link to="/" aria-label="BELTAL home"><Brand /></Link>
           <nav className="hidden md:flex items-center gap-6">
             {links.map(([label, id]) => <a key={id} href={mode === 'home' ? `#${id}` : `/#${id}`} onClick={(e) => goTo(e, id)} className={linkClass}>{label}</a>)}
+            <Link to="/docs" className={linkClass}>API Docs</Link>
           </nav>
           <div className="flex items-center gap-2">
             {isAuthenticated ? (
@@ -113,7 +114,12 @@ export default function SiteHeader({ mode = 'home' }) {
             </button>
           </div>
         </div>
-        {menuOpen && <nav className="md:hidden border-t border-slate-200 px-4 py-3 flex flex-col">{links.map(([label, id]) => <a key={id} href={mode === 'home' ? `#${id}` : `/#${id}`} onClick={(e) => goTo(e, id)} className={linkClass}>{label}</a>)}</nav>}
+        {menuOpen && (
+          <nav className="md:hidden border-t border-slate-200 px-4 py-3 flex flex-col">
+            {links.map(([label, id]) => <a key={id} href={mode === 'home' ? `#${id}` : `/#${id}`} onClick={(e) => goTo(e, id)} className={linkClass}>{label}</a>)}
+            <Link to="/docs" onClick={() => setMenuOpen(false)} className={linkClass}>API Docs</Link>
+          </nav>
+        )}
       </header>
     </>
   );

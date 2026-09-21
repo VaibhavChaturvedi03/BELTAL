@@ -82,8 +82,14 @@ async function runTests() {
     // TEST 3: Verify JWT Token validity and claims
     const decoded = jwt.verify(verifyData.data.token, config.jwtSecret);
     assert(decoded.walletAddress === walletAddress, 'Decoded JWT has correct walletAddress');
-    assert(decoded.role === 'USER', 'Default un-onboarded user has role USER');
-    assert(typeof decoded.clearanceLevel === 'number', 'Decoded JWT has clearanceLevel');
+    assert(decoded.isRegistered === false, 'Un-onboarded wallet gets a limited (isRegistered: false) session');
+    assert(decoded.role === undefined && decoded.clearanceLevel === undefined, 'Limited session carries no role or clearance');
+
+    // TEST 3b: Limited session is rejected by every role-guarded route
+    const limitedRes = await fetch(`${baseUrl.replace('/auth', '')}/users/me`, {
+      headers: { Authorization: `Bearer ${verifyData.data.token}` },
+    });
+    assert(limitedRes.status === 403, 'Limited session is rejected (403) by authenticated routes');
 
     // TEST 4: Anti-Replay Protection (Nonce must be consumed)
     const replayRes = await fetch(`${baseUrl}/verify`, {

@@ -2,6 +2,8 @@ import { Router } from 'express';
 import authenticate from '../middleware/auth.middleware.js';
 import { requireRole } from '../middleware/rbac.middleware.js';
 import tamperService from '../services/tamper.service.js';
+import validate from '../middleware/validate.js';
+import { tamperTargetSchema } from '../validators/verify.validator.js';
 import ApiError from '../utils/ApiError.js';
 
 const router = Router();
@@ -20,7 +22,7 @@ router.post(
   requireRole('ADMIN', 'AUDITOR'),
   async (req, res, next) => {
     try {
-      const { assetId, employeeId } = req.body;
+      const { assetId, employeeId } = req.body ?? {};
 
       if (!assetId && !employeeId) {
         return next(new ApiError(400, 'Provide at least one of: assetId, employeeId'));
@@ -91,7 +93,7 @@ router.get(
 router.get(
   '/asset/:assetId',
   authenticate,
-  requireRole('ADMIN', 'AUDITOR', 'MANAGER'),
+  requireRole('ADMIN', 'AUDITOR'),
   async (req, res, next) => {
     try {
       const report = await tamperService.verifyAssetIntegrity(req.params.assetId);
@@ -114,6 +116,49 @@ router.get(
     try {
       const report = await tamperService.verifyIdentityIntegrity(req.params.employeeId);
       res.json(report);
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * DEMO ONLY: POST /api/verify/simulate-tamper
+ * Plays the rogue insider for the Anti-Tamper Lab: rewrites one value in the
+ * Postgres cache (identity clearance / asset classification tier) without
+ * touching the chain, so the next audit check flags it. Off in production
+ * unless ENABLE_TAMPER_SIMULATION=true.
+ * Body: { kind: 'identity' | 'asset', id: string }
+ */
+router.post(
+  '/simulate-tamper',
+  authenticate,
+  requireRole('ADMIN', 'AUDITOR'),
+  validate(tamperTargetSchema),
+  async (req, res, next) => {
+    try {
+      const result = await tamperService.simulateTamper(req.body, req.user);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * DEMO ONLY: POST /api/verify/restore
+ * Undoes a simulated tamper by copying the on-chain value back into the cache.
+ * Never writes to the chain.
+ */
+router.post(
+  '/restore',
+  authenticate,
+  requireRole('ADMIN', 'AUDITOR'),
+  validate(tamperTargetSchema),
+  async (req, res, next) => {
+    try {
+      const result = await tamperService.restoreFromChain(req.body, req.user);
+      res.json({ success: true, data: result });
     } catch (err) {
       next(err);
     }

@@ -4,6 +4,9 @@ import logger from '../config/logger.js';
 import ApiError from '../utils/ApiError.js';
 import ipfsService from './ipfs.service.js';
 import chainService from './chain.service.js';
+import auditService from './audit.service.js';
+import scopeService from './scope.service.js';
+import { encryptDossier } from '../utils/dossier.util.js';
 
 export const assetService = {
   /**
@@ -17,12 +20,21 @@ export const assetService = {
   async mintAsset(callerUser, input) {
     if (!prisma) throw new ApiError(503, 'Database unavailable');
 
+    if (callerUser?.role === 'MANAGER' && !scopeService.canManageSbu(callerUser, input.sbu)) {
+      throw new ApiError(403, 'Managers can only mint assets for their own SBU');
+    }
+
     // 1. Resolve Target Custodian
     let custodian = null;
     if (input.ownerId) {
       custodian = await prisma.user.findUnique({ where: { id: input.ownerId } });
     } else if (input.ownerWalletAddress) {
-      const checksumAddress = ethers.getAddress(input.ownerWalletAddress);
+      let checksumAddress;
+      try {
+        checksumAddress = ethers.getAddress(input.ownerWalletAddress);
+      } catch {
+        throw new ApiError(400, 'Invalid Ethereum wallet address');
+      }
       custodian = await prisma.user.findUnique({ where: { walletAddress: checksumAddress } });
     } else if (callerUser && callerUser.id) {
       custodian = await prisma.user.findUnique({ where: { id: callerUser.id } });
@@ -68,7 +80,12 @@ export const assetService = {
       },
     };
 
-    const cid = await ipfsService.pinJson(ipfsPayload, {
+    // Encrypted with the same AES-256-GCM envelope as identity dossiers before
+    // it leaves the process: an asset spec names its custodian and carries the
+    // classification tier and serial numbers, so pinning it in clear would put
+    // exactly the data the chain deliberately keeps off itself onto a public
+    // gateway. Only the CID is recorded on-chain and cached in Postgres.
+    const cid = await ipfsService.pinJson(encryptDossier(ipfsPayload), {
       name: `asset-${input.name.replace(/\s+/g, '-').toLowerCase()}`,
     });
 
@@ -76,10 +93,18 @@ export const assetService = {
     const chainResult = await chainService.mintAssetOnChain({
       custodianWallet: custodian.walletAddress,
       assetTag: input.metadata?.assetTag || input.name,
+      serialNumber: typeof input.metadata?.serialNumber === 'string' ? input.metadata.serialNumber : undefined,
       classificationTier: input.classificationTier,
       sbu: input.sbu,
       ipfsCid: cid,
     });
+
+    // A contract that is configured but rejected/failed the mint must not be
+    // papered over with an off-chain-only row; only an unconfigured contract
+    // (no error reported) falls back to the off-chain cache.
+    if (chainResult.error) {
+      throw new ApiError(502, `On-chain mint failed: ${chainResult.error}`);
+    }
 
     if (!chainResult.confirmed) {
       logger.warn(
@@ -87,9 +112,21 @@ export const assetService = {
       );
     }
 
-    const resolvedTokenId = input.tokenId || (chainResult.tokenId ? String(chainResult.tokenId) : null);
+    // The on-chain token id is authoritative. A caller-supplied tokenId is only
+    // honoured for off-chain-only rows, and never replaces an existing asset.
+    const resolvedTokenId = chainResult.confirmed
+      ? (chainResult.tokenId ? String(chainResult.tokenId) : null)
+      : input.tokenId || null;
     if (resolvedTokenId) {
-      await prisma.asset.deleteMany({ where: { tokenId: resolvedTokenId } }).catch(() => {});
+      const clash = await prisma.asset.findUnique({ where: { tokenId: resolvedTokenId }, select: { id: true } });
+      if (clash) {
+        throw new ApiError(
+          409,
+          chainResult.confirmed
+            ? `Token ${resolvedTokenId} was minted on-chain (tx ${chainResult.txHash}) but a cached asset with that token ID already exists — reconcile manually`
+            : `An asset with token ID ${resolvedTokenId} already exists`
+        );
+      }
     }
 
     // 5. Persist Asset in PostgreSQL Cache
@@ -120,23 +157,23 @@ export const assetService = {
     });
 
     // 6. Log Immutable Audit Trail Event
-    await prisma.auditEvent
-      .create({
-        data: {
-          type: 'ASSET_MINTED',
-          actorId: callerUser?.id || null,
-          targetId: asset.id,
-          txHash: chainResult.txHash || `0xoffchain_${Date.now().toString(16)}`,
-          blockNumber: chainResult.blockNumber ? BigInt(chainResult.blockNumber) : BigInt(0),
-          payload: {
-            assetId: asset.id,
-            name: asset.name,
-            classificationTier: asset.classificationTier,
-            sbu: asset.sbu,
-            cid,
-            custodianId: custodian.id,
-            custodianWallet: custodian.walletAddress,
-          },
+    await auditService
+      .recordEvent({
+        type: 'ASSET_MINTED',
+        // Sessions without a DB identity (e.g. the ADMIN_WALLETS dev override)
+        // carry a wallet address as their id, which can't be an actor FK.
+        actorId: callerUser?.isRegistered === false ? null : callerUser?.id,
+        targetId: asset.id,
+        txHash: chainResult.txHash || `0xoffchain_${Date.now().toString(16)}`,
+        blockNumber: chainResult.blockNumber,
+        payload: {
+          assetId: asset.id,
+          name: asset.name,
+          classificationTier: asset.classificationTier,
+          sbu: asset.sbu,
+          cid,
+          custodianId: custodian.id,
+          custodianWallet: custodian.walletAddress,
         },
       })
       .catch((err) => logger.warn(`Failed to create audit log for asset mint: ${err.message}`));
@@ -177,7 +214,7 @@ export const assetService = {
   /**
    * Fetch single asset details with soulbound custody history and audit events
    */
-  async getAssetById(assetId) {
+  async getAssetById(assetId, callerUser) {
     if (!prisma) throw new ApiError(503, 'Database unavailable');
 
     const asset = await prisma.asset.findFirst({
@@ -210,6 +247,27 @@ export const assetService = {
 
     if (!asset) {
       throw new ApiError(404, 'Asset not found');
+    }
+
+    // Admins and auditors may open any asset. Everyone else needs to have held
+    // it or been party to a custody transfer of it; managers may also open
+    // assets within their SBU scope (own SBU + active cross-SBU passes).
+    const scope = callerUser ? await scopeService.getSbuScope(callerUser) : null;
+    if (scope) {
+      const involved =
+        asset.ownerId === callerUser.id ||
+        asset.transferRequests.some((tr) =>
+          [tr.fromUser?.id, tr.toUser?.id, tr.requestedBy?.id].includes(callerUser.id)
+        );
+      const inScope = callerUser.role === 'MANAGER' && scopeService.isAssetVisible(scope, asset);
+      if (!involved && !inScope) {
+        throw new ApiError(
+          403,
+          callerUser.role === 'MANAGER'
+            ? 'This asset is outside your SBU'
+            : 'You can only view assets that are or were in your custody'
+        );
+      }
     }
 
     // Retrieve related audit events for this asset
@@ -265,9 +323,10 @@ export const assetService = {
   },
 
   /**
-   * Admin / Manager / Auditor: List & search all assets with filters and pagination
+   * Admin / Manager / Auditor: List & search assets with filters and pagination.
+   * Admin and Auditor see every SBU; a Manager only sees their SBU scope.
    */
-  async listAssets(query) {
+  async listAssets(callerUser, query) {
     if (!prisma) throw new ApiError(503, 'Database unavailable');
 
     const page = Math.max(1, parseInt(query.page, 10) || 1);
@@ -275,6 +334,9 @@ export const assetService = {
     const skip = (page - 1) * limit;
 
     const where = {};
+
+    const scope = await scopeService.getSbuScope(callerUser);
+    if (scope) where.AND = [scopeService.assetWhere(scope)];
 
     if (query.sbu) {
       where.sbu = query.sbu;

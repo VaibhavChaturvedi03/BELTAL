@@ -1,6 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { auditApi } from '../../services/api';
 import Card, { CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
+import useModalA11y from '../../hooks/useModalA11y';
+import {
+    AUDIT_EVENT_TYPES,
+    getActionIcon,
+    getActionColor,
+    isChainTxHash,
+    formatAuditDate,
+} from '../../config/auditEvents';
 
 export default function AuditTrailExplorer() {
     const [events, setEvents] = useState([]);
@@ -18,11 +26,7 @@ export default function AuditTrailExplorer() {
         endDate: '',
     });
 
-    useEffect(() => {
-        fetchEvents();
-    }, [pagination.page, pagination.limit, filters]);
-
-    const fetchEvents = async () => {
+    const fetchEvents = useCallback(async () => {
         setLoading(true);
         setError(null);
         try {
@@ -37,23 +41,19 @@ export default function AuditTrailExplorer() {
             });
 
             const data = await auditApi.list(params);
-            const auditEvents = Array.isArray(data?.events) ? data.events : [];
-            // The API returns `type`, `actor`, and `targetId`; normalize them
-            // once for the existing explorer presentation.
-            setEvents(auditEvents.map((event) => ({
-                ...event,
-                actionType: event.type ?? event.actionType,
-                performedBy: event.actor ?? event.performedBy,
-                entityId: event.targetId ?? event.entityId,
-            })));
-            setTotal(data?.pagination?.total ?? data?.total ?? 0);
+            setEvents(data.events);
+            setTotal(data.pagination?.total ?? 0);
         } catch (err) {
             console.error("Failed to fetch audit events", err);
             setError(err?.uiMessage || 'The audit service could not be reached. Check that the backend is running and has been restarted after database configuration changes.');
         } finally {
             setLoading(false);
         }
-    };
+    }, [filters, pagination.page, pagination.limit]);
+
+    useEffect(() => {
+        fetchEvents();
+    }, [fetchEvents]);
 
     const handleFilterChange = (key, value) => {
         setFilters(prev => ({ ...prev, [key]: value }));
@@ -63,37 +63,6 @@ export default function AuditTrailExplorer() {
     const clearFilters = () => {
         setFilters({ actor: '', actionType: '', asset: '', startDate: '', endDate: '' });
         setPagination({ page: 1, limit: 20 });
-    };
-
-    const getActionIcon = (actionType) => {
-        const icons = {
-            IDENTITY_CREATED: 'person_add',
-            ROLE_CHANGED: 'admin_panel_settings',
-            ASSET_MINTED: 'token',
-            TRANSFER_EXECUTED: 'swap_horiz',
-            TRANSFER_REQUESTED: 'swap_horiz',
-            BADGE_TAP: 'badge',
-        };
-        return icons[actionType] || 'event';
-    };
-
-    const getActionColor = (actionType) => {
-        const colors = {
-            IDENTITY_CREATED: 'text-emerald-400',
-            ROLE_CHANGED: 'text-blue-400',
-            ASSET_MINTED: 'text-amber-400',
-            TRANSFER_EXECUTED: 'text-purple-400',
-            TRANSFER_REQUESTED: 'text-orange-400',
-            BADGE_TAP: 'text-pink-400',
-        };
-        return colors[actionType] || 'text-slate-400';
-    };
-
-    const formatDate = (dateString) => {
-        return new Date(dateString).toLocaleString('en-IN', {
-            day: '2-digit', month: 'short', year: 'numeric',
-            hour: '2-digit', minute: '2-digit', second: '2-digit'
-        });
     };
 
     const totalPages = Math.ceil(total / pagination.limit);
@@ -120,12 +89,13 @@ export default function AuditTrailExplorer() {
                 <CardContent>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                         <div>
-                            <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                                Actor (Wallet/Name)
+                            <label htmlFor="explorer-actor" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                                Actor ID
                             </label>
                             <input
+                                id="explorer-actor"
                                 type="text"
-                                placeholder="Search by actor..."
+                                placeholder="Identity ID of the actor..."
                                 value={filters.actor}
                                 onChange={(e) => handleFilterChange('actor', e.target.value)}
                                 className="w-full bg-[#0D1F38] border border-[#1F293D] rounded px-3 py-2 text-sm text-white focus:border-[#D4AF37] outline-none"
@@ -133,31 +103,30 @@ export default function AuditTrailExplorer() {
                         </div>
 
                         <div>
-                            <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                            <label htmlFor="explorer-action" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                                 Action Type
                             </label>
                             <select
+                                id="explorer-action"
                                 value={filters.actionType}
                                 onChange={(e) => handleFilterChange('actionType', e.target.value)}
                                 className="w-full bg-[#0D1F38] border border-[#1F293D] rounded px-3 py-2 text-sm text-white focus:border-[#D4AF37] outline-none"
                             >
                                 <option value="">All Actions</option>
-                                <option value="IDENTITY_CREATED">Identity Created</option>
-                                <option value="ROLE_CHANGED">Role Changed</option>
-                                <option value="ASSET_MINTED">Asset Minted</option>
-                                <option value="TRANSFER_EXECUTED">Transfer Executed</option>
-                                <option value="TRANSFER_REQUESTED">Transfer Requested</option>
-                                <option value="BADGE_TAP">Badge Tap</option>
+                                {AUDIT_EVENT_TYPES.map((type) => (
+                                    <option key={type.value} value={type.value}>{type.label}</option>
+                                ))}
                             </select>
                         </div>
 
                         <div>
-                            <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                                Asset ID/Name
+                            <label htmlFor="explorer-asset" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                                Asset / Target ID
                             </label>
                             <input
+                                id="explorer-asset"
                                 type="text"
-                                placeholder="Search by asset..."
+                                placeholder="Asset or zone ID..."
                                 value={filters.asset}
                                 onChange={(e) => handleFilterChange('asset', e.target.value)}
                                 className="w-full bg-[#0D1F38] border border-[#1F293D] rounded px-3 py-2 text-sm text-white focus:border-[#D4AF37] outline-none"
@@ -165,10 +134,11 @@ export default function AuditTrailExplorer() {
                         </div>
 
                         <div>
-                            <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                            <label htmlFor="explorer-start-date" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                                 Start Date
                             </label>
                             <input
+                                id="explorer-start-date"
                                 type="date"
                                 value={filters.startDate}
                                 onChange={(e) => handleFilterChange('startDate', e.target.value)}
@@ -177,10 +147,11 @@ export default function AuditTrailExplorer() {
                         </div>
 
                         <div>
-                            <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                            <label htmlFor="explorer-end-date" className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
                                 End Date
                             </label>
                             <input
+                                id="explorer-end-date"
                                 type="date"
                                 value={filters.endDate}
                                 onChange={(e) => handleFilterChange('endDate', e.target.value)}
@@ -244,7 +215,15 @@ export default function AuditTrailExplorer() {
                                                 <tr
                                                     key={event.id}
                                                     onClick={() => setSelectedEvent(event)}
-                                                    className="hover:bg-white/5 transition-colors cursor-pointer"
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === 'Enter' || e.key === ' ') {
+                                                            e.preventDefault();
+                                                            setSelectedEvent(event);
+                                                        }
+                                                    }}
+                                                    tabIndex={0}
+                                                    aria-label={`Inspect ${event.actionType?.replace(/_/g, ' ')} event`}
+                                                    className="hover:bg-white/5 transition-colors cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#1E5FA8]"
                                                 >
                                                     <td className="px-4 py-3">
                                                         <div className="flex items-center gap-2">
@@ -275,7 +254,7 @@ export default function AuditTrailExplorer() {
                                                         {event.txHash?.slice(0, 10)}...{event.txHash?.slice(-8)}
                                                     </td>
                                                     <td className="px-4 py-3 text-xs text-slate-400">
-                                                        {formatDate(event.timestamp || event.createdAt)}
+                                                        {formatAuditDate(event.timestamp, { seconds: true })}
                                                     </td>
                                                 </tr>
                                             ))
@@ -329,22 +308,25 @@ export default function AuditTrailExplorer() {
 
 // Event Detail Modal Component
 function EventDetailModal({ event, onClose }) {
-    const formatDate = (dateString) => {
-        return new Date(dateString).toLocaleString('en-IN', {
-            day: '2-digit', month: 'short', year: 'numeric',
-            hour: '2-digit', minute: '2-digit', second: '2-digit'
-        });
-    };
+    const dialogRef = useModalA11y(onClose);
 
     return (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
-            <div className="bg-[#0D1F38] border border-[#1F293D] rounded-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto">
+            <div
+                ref={dialogRef}
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="event-detail-title"
+                className="bg-[#0D1F38] border border-[#1F293D] rounded-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto"
+            >
                 <div className="p-6 space-y-4">
                     {/* Header */}
                     <div className="flex items-center justify-between pb-4 border-b border-[#1F293D]">
-                        <h2 className="text-xl font-black text-white">Event Details</h2>
+                        <h2 id="event-detail-title" className="text-xl font-black text-white">Event Details</h2>
                         <button
+                            type="button"
                             onClick={onClose}
+                            aria-label="Close event details"
                             className="text-slate-400 hover:text-white transition-colors"
                         >
                             <span className="material-symbols-outlined">close</span>
@@ -360,7 +342,7 @@ function EventDetailModal({ event, onClose }) {
 
                         <div>
                             <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Timestamp</div>
-                            <div className="text-white">{formatDate(event.timestamp || event.createdAt)}</div>
+                            <div className="text-white">{formatAuditDate(event.timestamp, { seconds: true })}</div>
                         </div>
 
                         <div>
@@ -381,14 +363,16 @@ function EventDetailModal({ event, onClose }) {
                             <div>
                                 <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-1">Transaction Hash</div>
                                 <div className="text-emerald-400 font-mono text-xs break-all">{event.txHash}</div>
-                                <a
-                                    href={`https://etherscan.io/tx/${event.txHash}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="text-[#1E5FA8] hover:text-[#7ab0fe] text-xs mt-1 inline-block"
-                                >
-                                    View on Etherscan →
-                                </a>
+                                {isChainTxHash(event.txHash) && (
+                                    <a
+                                        href={`https://sepolia.etherscan.io/tx/${event.txHash}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-[#1E5FA8] hover:text-[#7ab0fe] text-xs mt-1 inline-block"
+                                    >
+                                        View on Etherscan →
+                                    </a>
+                                )}
                             </div>
                         )}
 
@@ -409,6 +393,7 @@ function EventDetailModal({ event, onClose }) {
                     {/* Close Button */}
                     <div className="pt-4 border-t border-[#1F293D]">
                         <button
+                            type="button"
                             onClick={onClose}
                             className="w-full px-4 py-2 bg-[#1E5FA8] hover:bg-[#164a85] text-white font-bold rounded transition-colors"
                         >

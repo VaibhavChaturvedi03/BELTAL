@@ -46,17 +46,34 @@ export function shortenAddress(address) {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
 
-/* ── Build user object from JWT payload ────────────────────── */
+/* ── Portal (landing route) for each backend role ──────────── */
+const ROLE_HOME = {
+  ADMIN: '/admin/dashboard',
+  MANAGER: '/manager/dashboard',
+  AUDITOR: '/auditor/dashboard',
+  USER: '/user/dashboard',
+};
+
+export function roleHomePath(role) {
+  return ROLE_HOME[role?.toUpperCase()] ?? null;
+}
+
+/* ── Build user object from JWT payload / login response ───────
+   Same field names in both. An unregistered wallet's limited
+   session has no role (null) — never a default one. */
 function userFromPayload(payload) {
   if (!payload) return null;
   return {
+    // `sub` is the User id for registered sessions; limited sessions have none
+    id: payload.id ?? (payload.isRegistered ? payload.sub : null),
     walletAddress: payload.walletAddress ?? payload.sub,
-    role: payload.role ?? 'USER',
-    clearanceLevel: payload.clearanceLevel ?? 1,
+    role: payload.role?.toUpperCase() ?? null,
+    clearanceLevel: payload.clearanceLevel ?? null,
     sbu: payload.sbu ?? null,
     isRegistered: payload.isRegistered ?? false,
-    // Backend may add displayName, did, name in future claims
+    // `name` and `displayName` both exposed: layout components read either
     name: payload.displayName ?? null,
+    displayName: payload.displayName ?? null,
     did: payload.did ?? null,
   };
 }
@@ -125,6 +142,13 @@ export function AuthProvider({ children }) {
     return () => window.ethereum.removeListener?.('accountsChanged', handler);
   }, [user?.walletAddress]);
 
+  /* ── Persist a session (login, or registration approval) ─── */
+  const applySession = useCallback((jwt, userData) => {
+    localStorage.setItem('token', jwt);
+    setToken(jwt);
+    setUser(userFromPayload(userData));
+  }, []);
+
   /* ── connectWallet — 4-step SIWE ────────────────────────── */
   const connectWallet = useCallback(async () => {
     setConnectError(null);
@@ -160,18 +184,7 @@ export function AuthProvider({ children }) {
       setConnectStep('verifying');
       const { token: jwt, user: userData } = await authApi.verify(walletAddress, signature);
 
-      /* ── Persist & hydrate state ── */
-      localStorage.setItem('token', jwt);
-      setToken(jwt);
-      setUser({
-        walletAddress: userData.walletAddress ?? walletAddress,
-        role: userData.role ?? 'USER',
-        clearanceLevel: userData.clearanceLevel ?? 1,
-        sbu: userData.sbu ?? null,
-        isRegistered: userData.isRegistered ?? false,
-        name: userData.displayName ?? null,
-        did: userData.did ?? null,
-      });
+      applySession(jwt, { ...userData, walletAddress: userData.walletAddress ?? walletAddress });
       setConnectStep('done');
     } catch (err) {
       // User rejected signature (code 4001) — friendly message
@@ -184,7 +197,7 @@ export function AuthProvider({ children }) {
       }
       setConnectStep('error');
     }
-  }, []);
+  }, [applySession]);
 
   /* ── Reset connect state (so modal can be re-opened cleanly) */
   const resetConnect = useCallback(() => {
@@ -208,6 +221,7 @@ export function AuthProvider({ children }) {
         resetConnect,
 
         /* Session management */
+        applySession,
         logout,
       }}
     >

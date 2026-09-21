@@ -32,11 +32,11 @@ const hash = crypto.createHash('sha256').update(checksumAddr + salt).digest('hex
 try {
   const user = await prisma.user.upsert({
     where:  { walletAddress: checksumAddr },
-    update: { role: 'ADMIN', clearanceLevel: 5 },
+    update: { role: 'ADMIN', clearanceLevel: 4 },
     create: {
       walletAddress: checksumAddr,
       role:          'ADMIN',
-      clearanceLevel: 5,
+      clearanceLevel: 4,
       sbu:           'SBU_CYBER',
       identityHash:  hash,
       identitySalt:  salt,

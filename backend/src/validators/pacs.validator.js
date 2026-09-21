@@ -12,4 +12,26 @@ export const lockdownSchema = z.object({
   locked: z.boolean({ required_error: 'locked is required' }),
 });
 
-export default { badgeEventSchema, lockdownSchema };
+// DEMO simulator tap: the human-facing counterpart of badgeEventSchema. The
+// employee is picked from a directory, so it is identified by internal User id
+// or wallet address rather than the badge's employee code.
+export const simulateTapSchema = z
+  .object({
+    zoneId: z.string({ required_error: 'zoneId is required' }).trim().min(1),
+    employeeId: z.string().trim().min(1).optional(),
+    walletAddress: z.string().trim().min(1).optional(),
+    readerId: z.string().trim().min(1).max(64).optional(),
+  })
+  .refine((body) => Boolean(body.employeeId) !== Boolean(body.walletAddress), {
+    message: 'Provide exactly one of employeeId or walletAddress',
+    path: ['employeeId'],
+  });
+
+export const listEventsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  zoneId: z.string().trim().min(1).optional(),
+  decision: z.enum(['GRANTED', 'DENIED']).optional(),
+});
+
+export default { badgeEventSchema, lockdownSchema, simulateTapSchema, listEventsQuerySchema };

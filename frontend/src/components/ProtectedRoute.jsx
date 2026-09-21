@@ -1,5 +1,16 @@
+import { useEffect } from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { useAuth, roleHomePath } from '../context/AuthContext';
+import { useToast } from './ui/Toast';
+
+// Sends a signed-in user back to their own portal, saying why.
+function DeniedRedirect({ to, message }) {
+  const toast = useToast();
+  useEffect(() => {
+    toast.warning(message, 'Access Denied');
+  }, [toast, message]);
+  return <Navigate to={to} replace />;
+}
 
 export default function ProtectedRoute({ allowedRoles }) {
   const { user, loading } = useAuth();
@@ -21,10 +32,20 @@ export default function ProtectedRoute({ allowedRoles }) {
     return <Navigate to="/login" replace />;
   }
 
+  // A wallet with no registered identity only gets the registration flow
+  if (!user.isRegistered) {
+    return <Navigate to="/register" replace />;
+  }
+
   // Check if user role is allowed
   const userRole = user.role?.toUpperCase();
   if (!allowedRoles.includes(userRole)) {
-    return <Navigate to="/403" replace />;
+    return (
+      <DeniedRedirect
+        to={roleHomePath(userRole) ?? '/'}
+        message={`That page is not available to the ${userRole} role — you have been returned to your portal.`}
+      />
+    );
   }
 
   // This component is used as a route wrapper in App.jsx. Nested routes are

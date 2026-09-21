@@ -34,24 +34,21 @@ router.get(
 
 /**
  * Approve & execute custody handover on-chain and in DB cache
- * Restricted to ADMIN and MANAGER
+ * Restricted to ADMIN and MANAGER. PATCH is accepted alongside POST because
+ * the web client issues it as a state change on the request.
  */
-router.post(
-  '/:id/approve',
-  authenticate,
-  requireRole('ADMIN', 'MANAGER'),
-  transferController.approveTransfer
-);
+router
+  .route('/:id/approve')
+  .post(authenticate, requireRole('ADMIN', 'MANAGER'), transferController.approveTransfer)
+  .patch(authenticate, requireRole('ADMIN', 'MANAGER'), transferController.approveTransfer);
 
 /**
  * Reject a custody handover request
  * Accessible to ADMIN, MANAGER, or original custodian
  */
-router.post(
-  '/:id/reject',
-  authenticate,
-  validate(rejectTransferSchema),
-  transferController.rejectTransfer
-);
+router
+  .route('/:id/reject')
+  .post(authenticate, validate(rejectTransferSchema), transferController.rejectTransfer)
+  .patch(authenticate, validate(rejectTransferSchema), transferController.rejectTransfer);
 
 export default router;

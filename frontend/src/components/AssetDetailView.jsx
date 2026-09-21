@@ -1,34 +1,14 @@
-import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { assetApi, transferApi } from '../services/api';
+import useAssetDetail from '../hooks/useAssetDetail';
 import Card, { CardContent, CardHeader, CardTitle } from './ui/Card';
+import { TierBadge } from './ui/Badge';
+
+const isApproved = (status) => status === 'APPROVED' || status === 'EXECUTED';
 
 export default function AssetDetailView({ role = 'user' }) {
     const { id } = useParams();
     const navigate = useNavigate();
-    const [asset, setAsset] = useState(null);
-    const [history, setHistory] = useState([]);
-    const [loading, setLoading] = useState(true);
-
-    useEffect(() => {
-        fetchAssetDetail();
-    }, [id]);
-
-    const fetchAssetDetail = async () => {
-        setLoading(true);
-        try {
-            const data = await assetApi.list({ id });
-            const foundAsset = data.assets?.[0];
-            setAsset(foundAsset);
-
-            const transfersData = await transferApi.list({ assetId: id });
-            setHistory(transfersData.transfers || []);
-        } catch (err) {
-            console.error("Failed to fetch asset detail", err);
-        } finally {
-            setLoading(false);
-        }
-    };
+    const { asset, history, loading, error } = useAssetDetail(id);
 
     const getStatusColor = (status) => {
         switch (status?.toUpperCase()) {
@@ -39,12 +19,13 @@ export default function AssetDetailView({ role = 'user' }) {
         }
     };
 
-    const getRoleColor = () => {
+    // Full class names so Tailwind can detect them at build time.
+    const getRoleAccent = () => {
         switch (role) {
-            case 'admin': return 'text-blue-500';
-            case 'manager': return 'text-purple-500';
-            case 'auditor': return 'text-amber-500';
-            default: return 'text-emerald-500';
+            case 'admin': return { line: 'from-blue-500/40', text: 'text-blue-500/60' };
+            case 'manager': return { line: 'from-purple-500/40', text: 'text-purple-500/60' };
+            case 'auditor': return { line: 'from-amber-500/40', text: 'text-amber-500/60' };
+            default: return { line: 'from-emerald-500/40', text: 'text-emerald-500/60' };
         }
     };
 
@@ -58,7 +39,7 @@ export default function AssetDetailView({ role = 'user' }) {
                 <Card goldAccent={false}>
                     <CardContent>
                         <div className="text-center py-12">
-                            <p className="text-slate-400">Asset not found</p>
+                            <p className="text-slate-400" role={error ? 'alert' : undefined}>{error || 'Asset not found'}</p>
                             <button
                                 onClick={() => navigate(-1)}
                                 className="mt-4 px-4 py-2 bg-[#1E5FA8] text-white text-xs font-bold rounded"
@@ -77,8 +58,8 @@ export default function AssetDetailView({ role = 'user' }) {
             <div className="flex items-start justify-between gap-4 flex-wrap">
                 <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-2">
-                        <span className={`h-px w-12 bg-gradient-to-r from-${getRoleColor()}/40 to-transparent`} />
-                        <span className={`text-[9px] font-black tracking-[0.22em] ${getRoleColor()}/60 uppercase`}>
+                        <span className={`h-px w-12 bg-gradient-to-r ${getRoleAccent().line} to-transparent`} />
+                        <span className={`text-[9px] font-black tracking-[0.22em] ${getRoleAccent().text} uppercase`}>
                             ASSET DETAIL VIEW
                         </span>
                     </div>
@@ -101,7 +82,7 @@ export default function AssetDetailView({ role = 'user' }) {
                                     </span>
                                 } />
                                 <InfoBlock label="Asset Type" value={asset.assetType || 'N/A'} />
-                                <InfoBlock label="Classification Tier" value={`Tier ${asset.classificationTier}`} />
+                                <InfoBlock label="Classification Tier" value={<TierBadge tier={asset.classificationTier} className="text-xs" />} />
                                 <InfoBlock label="Current Custodian" value={asset.owner?.displayName || 'Unassigned'} />
                                 <InfoBlock label="Minted On" value={new Date(asset.createdAt).toLocaleString('en-IN')} />
                                 <InfoBlock label="SBU" value={asset.sbu?.replace('SBU_', '') || 'N/A'} />
@@ -125,7 +106,7 @@ export default function AssetDetailView({ role = 'user' }) {
                                             )}
                                             <div className="absolute left-0 top-1 w-6 h-6 rounded-full bg-[#1E5FA8] border-2 border-[#060D1A] flex items-center justify-center">
                                                 <span className="material-symbols-outlined text-[12px] text-white">
-                                                    {transfer.status === 'APPROVED' ? 'check' : transfer.status === 'REJECTED' ? 'close' : 'pending'}
+                                                    {isApproved(transfer.status) ? 'check' : transfer.status === 'REJECTED' ? 'close' : 'pending'}
                                                 </span>
                                             </div>
                                             <div className="bg-[#0D1F38] border border-[#1F293D] rounded p-3">
@@ -138,7 +119,7 @@ export default function AssetDetailView({ role = 'user' }) {
                                                             {new Date(transfer.createdAt).toLocaleString('en-IN')}
                                                         </div>
                                                     </div>
-                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${transfer.status === 'APPROVED' ? 'bg-emerald-900/50 text-emerald-400' :
+                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${isApproved(transfer.status) ? 'bg-emerald-900/50 text-emerald-400' :
                                                             transfer.status === 'REJECTED' ? 'bg-red-900/50 text-red-400' :
                                                                 'bg-amber-900/50 text-amber-400'
                                                         }`}>

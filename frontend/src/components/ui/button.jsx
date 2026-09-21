@@ -1,5 +1,3 @@
-import { useState } from 'react'
-
 /**
  * Button — Defense-grade action button
  *
@@ -14,7 +12,7 @@ import { useState } from 'react'
 
 const VARIANTS = {
   primary:
-    'bg-[#1E5FA8] hover:bg-[#1A52931] active:bg-[#163f7a] text-white border border-[#2a72c0] shadow-[0_0_12px_rgba(30,95,168,0.3)]',
+    'bg-[#1E5FA8] hover:bg-[#1A5293] active:bg-[#163f7a] text-white border border-[#2a72c0] shadow-[0_0_12px_rgba(30,95,168,0.3)]',
   secondary:
     'bg-[#0D1F38] hover:bg-[#152847] active:bg-[#0a1828] text-slate-200 border border-[#1F293D]',
   outline:

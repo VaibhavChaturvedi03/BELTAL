@@ -1,5 +1,6 @@
 import prisma from '../config/db.js';
 import ApiError from '../utils/ApiError.js';
+import scopeService from '../services/scope.service.js';
 
 export const userController = {
   /**
@@ -25,6 +26,7 @@ export const userController = {
           id: user.id,
           walletAddress: user.walletAddress,
           externalId: user.externalId,
+          did: user.did,
           displayName: user.displayName,
           role: user.role,
           clearanceLevel: user.clearanceLevel,
@@ -38,8 +40,14 @@ export const userController = {
   },
 
   /**
-   * GET /api/users/transfer-recipients — registered users other than the
-   * caller. This deliberately exposes only the fields needed by the form.
+   * GET /api/users/transfer-recipients — candidate recipients other than the
+   * caller, for the transfer forms and the manager's team roster.
+   *
+   * Scope: Admin/Auditor see everyone. Users and Managers see personnel of their
+   * own SBU (plus SBUs opened by their active cross-SBU passes) and visitors
+   * holding an active pass into their SBU. Only the fields the forms render are
+   * returned; role and wallet address go to oversight roles (the manager roster
+   * shows and searches them), never to plain users.
    */
   async listTransferRecipients(req, res, next) {
     try {
@@ -52,17 +60,31 @@ export const userController = {
         ? Math.min(Math.max(requestedLimit, 1), 100)
         : 100;
 
+      // A revoked identity cannot take custody (the contract rejects it), so
+      // do not offer it as a recipient.
+      const where = { id: { not: req.user.id }, revokedAt: null };
+      const scope = await scopeService.getSbuScope(req.user);
+      if (scope) {
+        where.OR = [
+          { sbu: { in: scope.sbus } },
+          ...(scope.ownSbu
+            ? [{ crossSbuPasses: { some: { targetSbu: scope.ownSbu, validUntil: { gt: new Date() } } } }]
+            : []),
+        ];
+      }
+
+      const showIdentity = ['ADMIN', 'MANAGER', 'AUDITOR'].includes(req.user.role);
       const users = await prisma.user.findMany({
-        where: { id: { not: req.user.id } },
+        where,
         take: limit,
         orderBy: { displayName: 'asc' },
         select: {
           id: true,
-          walletAddress: true,
           displayName: true,
-          role: true,
+          did: true,
           clearanceLevel: true,
           sbu: true,
+          ...(showIdentity ? { walletAddress: true, role: true } : {}),
         },
       });
 

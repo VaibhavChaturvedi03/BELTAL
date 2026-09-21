@@ -1,9 +1,8 @@
-import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 
-export default function Sidebar({ collapsed, setCollapsed }) {
+export default function Sidebar({ collapsed, setCollapsed, mobileOpen = false, closeMobile = () => {} }) {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
@@ -21,8 +20,19 @@ export default function Sidebar({ collapsed, setCollapsed }) {
     { path: '/team-assets', label: 'Team Assets', icon: 'shield', roles: ['MANAGER'] },
     { path: '/transfers', label: 'Transfer Approvals', icon: 'swap_horiz', roles: ['MANAGER', 'ADMIN'] },
     { path: '/admin/identities', label: 'Identity Ledger', icon: 'fingerprint', roles: ['ADMIN'] },
+    { path: '/admin/registrations', label: 'Registrations', icon: 'how_to_reg', roles: ['ADMIN'] },
+    { path: '/admin/roles', label: 'Role Assignment', icon: 'admin_panel_settings', roles: ['ADMIN'] },
+    { path: '/admin/quarantine', label: 'Quarantine', icon: 'gpp_bad', roles: ['ADMIN'] },
+    { path: '/admin/recovery', label: 'Account Recovery', icon: 'key', roles: ['ADMIN'] },
+    { path: '/admin/mint-asset', label: 'Mint Asset', icon: 'add_circle', roles: ['ADMIN'] },
     { path: '/admin/assets', label: 'Asset Registry', icon: 'token', roles: ['ADMIN'] },
-    { path: '/audit/explorer', label: 'Audit Trail', icon: 'receipt_long', roles: ['AUDITOR'] },
+    { path: '/audit/assets', label: 'Asset Registry', icon: 'token', roles: ['AUDITOR'] },
+    { path: '/admin/zones', label: 'Facility Zones', icon: 'meeting_room', roles: ['ADMIN'] },
+    { path: '/passes', label: 'Access Passes', icon: 'badge', roles: ['ADMIN', 'MANAGER'] },
+    { path: '/pacs/simulator', label: 'Badge Simulator', icon: 'contactless', roles: ['ADMIN', 'MANAGER'] },
+    // ADMIN may read the audit trail (the route allows it) but had no way in.
+    { path: '/audit/explorer', label: 'Audit Trail', icon: 'receipt_long', roles: ['AUDITOR', 'ADMIN'] },
+    { path: '/audit/verify', label: 'Verification', icon: 'fact_check', roles: ['AUDITOR', 'ADMIN'] },
   ];
 
   const filteredMenu = menuItems.filter(item => item.roles.includes(user?.role));
@@ -31,7 +41,6 @@ export default function Sidebar({ collapsed, setCollapsed }) {
   const bg = isDark ? 'bg-[#060D1A]' : 'bg-[linear-gradient(180deg,#d7ecff_0%,#e9f5ff_48%,#dceeff_100%)] backdrop-blur-xl';
   const border = isDark ? 'border-[#1F293D]' : 'border-[#B9DCEF]';
   const textPrimary = isDark ? 'text-slate-300' : 'text-[#0A1F3D]';
-  const textMuted = isDark ? 'text-slate-500' : 'text-[#6B7280]';
   const hoverBg = isDark ? 'hover:bg-white/5' : 'hover:bg-white/75 hover:shadow-sm';
   const activeBg = isDark ? 'bg-[#0D1F38] text-[#D4AF37]' : 'bg-[#0D2B4E] text-white shadow-[0_8px_20px_rgba(13,43,78,0.16)]';
   const inactiveText = isDark ? 'text-slate-400' : 'text-[#4A5568]';
@@ -39,11 +48,23 @@ export default function Sidebar({ collapsed, setCollapsed }) {
   return (
     <aside
       className={`
-        fixed inset-y-0 left-0 z-40 flex flex-col border-r transition-[width] duration-200 ease-out
+        fixed inset-y-0 left-0 z-40 flex flex-col border-r transition-transform duration-200 ease-out
+        lg:transition-[width]
         ${bg} ${border} ${textPrimary}
-        ${collapsed ? 'w-16' : 'w-64'}
+        w-64 ${collapsed ? 'lg:w-16' : 'lg:w-64'}
+        ${mobileOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0
       `}
+      aria-hidden={undefined}
     >
+      {/* Drawer dismiss — mobile only; on lg+ the rail is always present. */}
+      <button
+        type="button"
+        onClick={closeMobile}
+        aria-label="Close navigation"
+        className="absolute right-2 top-4 rounded-md p-1 text-[#4A5568] hover:bg-black/5 lg:hidden"
+      >
+        <span className="material-symbols-outlined text-[20px]">close</span>
+      </button>
       {/* ── Logo ── */}
       <div className={`h-16 flex items-center ${collapsed ? 'justify-center' : 'px-5'} border-b ${border}`}>
         <div className="flex items-center gap-3">
@@ -72,13 +93,13 @@ export default function Sidebar({ collapsed, setCollapsed }) {
             {user?.role || 'USER'}
           </div>
           <p className={`text-xs mt-1.5 truncate font-medium ${isDark ? 'text-slate-400' : 'text-[#4A5568]'}`}>
-            {user?.displayName || 'Registered User'}
+            {user?.displayName || user?.name || 'Registered User'}
           </p>
         </div>
       )}
 
       {/* ── Navigation ── */}
-      <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
+      <nav aria-label="Primary" className="flex-1 p-3 space-y-1 overflow-y-auto">
         {filteredMenu.map((item) => {
           const isActive = location.pathname === item.path;
           return (
@@ -88,14 +109,16 @@ export default function Sidebar({ collapsed, setCollapsed }) {
               className={`
                 w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition-all
                 ${isActive ? activeBg : `${inactiveText} ${hoverBg}`}
-                ${collapsed ? 'justify-center' : ''}
+                ${collapsed ? 'lg:justify-center' : ''}
               `}
               title={collapsed ? item.label : ''}
+              aria-label={item.label}
+              aria-current={isActive ? 'page' : undefined}
             >
               <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: isActive ? "'FILL' 1" : "'FILL' 0" }}>
                 {item.icon}
               </span>
-              {!collapsed && <span>{item.label}</span>}
+              <span className={collapsed ? 'lg:hidden' : ''}>{item.label}</span>
             </button>
           );
         })}
@@ -105,7 +128,8 @@ export default function Sidebar({ collapsed, setCollapsed }) {
       <div className={`p-3 border-t ${border} space-y-1`}>
         <button
           onClick={() => setCollapsed(!collapsed)}
-          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition-all ${inactiveText} ${hoverBg} ${collapsed ? 'justify-center' : ''}`}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          className={`hidden lg:flex w-full items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition-all ${inactiveText} ${hoverBg} ${collapsed ? 'justify-center' : ''}`}
         >
           <span className="material-symbols-outlined text-[20px]">
             {collapsed ? 'chevron_right' : 'chevron_left'}
@@ -114,6 +138,7 @@ export default function Sidebar({ collapsed, setCollapsed }) {
         </button>
         <button
           onClick={logout}
+          aria-label="Logout"
           className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition-all text-red-500 ${isDark ? 'hover:bg-red-500/10' : 'hover:bg-red-50'} ${collapsed ? 'justify-center' : ''}`}
         >
           <span className="material-symbols-outlined text-[20px]">logout</span>
