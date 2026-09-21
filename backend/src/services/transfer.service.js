@@ -227,12 +227,27 @@ export const transferService = {
       }
     }
 
-    // 1. Execute On-Chain Custody Reassignment
+    // 1. Execute On-Chain Custody Reassignment (Issue #100 — EIP-712 signature)
+    //
+    // If the TransferRequest carries a pre-built EIP-712 custodian signature
+    // (stored when the outgoing custodian accepted the handover on the frontend),
+    // pass it through to chain.service so the verified transferCustody() path is used.
+    //
+    // If no signature is present (emergency / admin-initiated bypasses), the chain
+    // service falls back to reassignCustody() — the admin-only path that stores an
+    // empty signature in custodyHistory as a bypass marker.
+    //
+    // deadline: 1 hour from approval time — long enough for the tx to confirm.
+    const signatureDeadline = Math.floor(Date.now() / 1000) + 3600;
+
     const chainResult = await chainService.reassignCustodyOnChain({
       tokenId: transferRequest.asset.tokenId,
       newCustodianWallet: transferRequest.toUser.walletAddress,
       reason: 'DUAL_AUTHORIZED_MANAGER_APPROVAL',
+      signature: transferRequest.custodianSignature ?? null,  // hex EIP-712 sig from frontend
+      deadline: signatureDeadline,
     });
+
 
     if (!chainResult.confirmed) {
       logger.warn(
