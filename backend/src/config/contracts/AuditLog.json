@@ -1,6 +1,6 @@
 {
   "contractName": "AuditLog",
-  "address": "0xB75560FA2Eb7636dd180B94C4BF074dA21e14523",
+  "address": "0xBc1a55d597845Af677ef65C41DE39591477B155E",
   "abi": [
     {
       "type": "constructor",

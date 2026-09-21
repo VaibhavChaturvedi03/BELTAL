@@ -1,6 +1,6 @@
 {
   "contractName": "AssetNFT",
-  "address": "0xFc932Cc7DFF6ec107253856a884c624A8F9D7579",
+  "address": "0xb8E64CEFBFb450F7432Ce5e9F46AC2DffA1d4232",
   "abi": [
     {
       "type": "constructor",
@@ -113,6 +113,34 @@
     },
     {
       "type": "function",
+      "name": "CUSTODY_TRANSFER_TYPEHASH",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "bytes32",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "DOMAIN_SEPARATOR",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "type": "bytes32",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
       "name": "accessControl",
       "constant": true,
       "stateMutability": "view",
@@ -216,6 +244,41 @@
     },
     {
       "type": "function",
+      "name": "buildCustodyTransferDigest",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": "tokenId"
+        },
+        {
+          "type": "address",
+          "name": "from"
+        },
+        {
+          "type": "address",
+          "name": "to"
+        },
+        {
+          "type": "uint256",
+          "name": "nonce"
+        },
+        {
+          "type": "uint256",
+          "name": "deadline"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "bytes32",
+          "name": ""
+        }
+      ]
+    },
+    {
+      "type": "function",
       "name": "custodians",
       "constant": true,
       "stateMutability": "view",
@@ -265,6 +328,25 @@
         {
           "type": "bytes",
           "name": "signature"
+        }
+      ]
+    },
+    {
+      "type": "function",
+      "name": "custodyNonces",
+      "constant": true,
+      "stateMutability": "view",
+      "payable": false,
+      "inputs": [
+        {
+          "type": "uint256",
+          "name": ""
+        }
+      ],
+      "outputs": [
+        {
+          "type": "uint256",
+          "name": ""
         }
       ]
     },
@@ -697,6 +779,10 @@
         {
           "type": "string",
           "name": "reason"
+        },
+        {
+          "type": "uint256",
+          "name": "deadline"
         },
         {
           "type": "bytes",

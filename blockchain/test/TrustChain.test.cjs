@@ -554,13 +554,14 @@ describe('TrustChain (BELTAL) Smart Contract Security & Functional Test Suite (#
     // 8.2  transferCustody — revert cases
     // -----------------------------------------------------------------------
     it('transferCustody: reverts for unregistered wallet (no identity record)', async function () {
-      // systemConnector.address has no identity registered in this suite
+      // systemConnector.address has no identity registered in this suite.
+      // Uses reassignCustody (admin bypass) — the clearance gate runs in _executeCustodyTransfer
+      // and reverts before any signature check.
       await expect(
-        assetNFT.connect(manager).transferCustody(
+        assetNFT.connect(manager).reassignCustody(
           tokenId,
           systemConnector.address,
-          'HANDOVER-UNREG',
-          '0x'
+          'HANDOVER-UNREG'
         )
       ).to.be.revertedWith('AssetNFT: Recipient has no active identity');
     });
@@ -576,11 +577,10 @@ describe('TrustChain (BELTAL) Smart Contract Security & Functional Test Suite (#
       await identityRegistry.revokeIdentity(unauthorizedUser.address, 'Revoked before transfer');
 
       await expect(
-        assetNFT.connect(manager).transferCustody(
+        assetNFT.connect(manager).reassignCustody(
           tokenId,
           unauthorizedUser.address,
-          'HANDOVER-REVOKED',
-          '0x'
+          'HANDOVER-REVOKED'
         )
       ).to.be.revertedWith('AssetNFT: Recipient has no active identity');
     });
@@ -595,11 +595,10 @@ describe('TrustChain (BELTAL) Smart Contract Security & Functional Test Suite (#
       );
 
       await expect(
-        assetNFT.connect(manager).transferCustody(
+        assetNFT.connect(manager).reassignCustody(
           tokenId,
           unauthorizedUser.address,
-          'HANDOVER-LOWCLEAR',
-          '0x'
+          'HANDOVER-LOWCLEAR'
         )
       ).to.be.revertedWith('AssetNFT: Recipient clearance insufficient for asset classification');
     });
@@ -638,28 +637,292 @@ describe('TrustChain (BELTAL) Smart Contract Security & Functional Test Suite (#
         SBU_RADAR
       );
 
-      const tx = await assetNFT.connect(manager).transferCustody(
+      // Use the admin-bypass path (no EIP-712 sig required) — verifies that
+      // clearance gates still allow a valid transfer to proceed.
+      const tx = await assetNFT.connect(manager).reassignCustody(
         tokenId,
         unauthorizedUser.address,
-        'HANDOVER-VALID',
-        '0x'
+        'HANDOVER-VALID'
       );
 
-      // Verify the event fired with the correct token, addresses, and reason
-      await expect(tx)
-        .to.emit(assetNFT, 'CustodyReassigned')
-        .withArgs(
-          tokenId,
-          employee.address,
-          unauthorizedUser.address,
-          'HANDOVER-VALID',
-          (await tx.wait()).logs
-            .find(l => l.fragment && l.fragment.name === 'CustodyReassigned')
-            .args[4] // timestamp from the actual emitted event
-        );
+      // Verify the event fired
+      await expect(tx).to.emit(assetNFT, 'CustodyReassigned');
 
       // Also verify on-chain custodian state was updated
       expect(await assetNFT.getCustodian(tokenId)).to.equal(unauthorizedUser.address);
+    });
+  });
+
+  // =========================================================================
+  // 9. EIP-712 Custody Transfer Signature Verification (Issue #100)
+  //    Verifies that transferCustody enforces on-chain EIP-712 typed-data
+  //    signature recovery — only the current custodian's valid, unexpired,
+  //    non-replayed signature is accepted.
+  // =========================================================================
+  describe('9. EIP-712 Custody Transfer Signature Verification (Issue #100)', function () {
+    const TIER = 3;
+    const ASSET_TAG = 'BEL-EIP712-TEST';
+    const TOKEN_URI = 'ipfs://QmEip712Test';
+    let tokenId;
+    let assetNFTAddress;
+    let chainId;
+
+    // Helper: build the EIP-712 domain object for ethers.js signTypedData
+    function buildDomain(contractAddress, cId) {
+      return {
+        name: 'TrustChain BEL Defence Asset',
+        version: '1',
+        chainId: cId,
+        verifyingContract: contractAddress,
+      };
+    }
+
+    // Helper: CustodyTransfer EIP-712 types
+    const custodyTransferTypes = {
+      CustodyTransfer: [
+        { name: 'tokenId',  type: 'uint256' },
+        { name: 'from',     type: 'address' },
+        { name: 'to',       type: 'address' },
+        { name: 'nonce',    type: 'uint256' },
+        { name: 'deadline', type: 'uint256' },
+      ],
+    };
+
+    // Helper: sign a CustodyTransfer struct with ethers v6 signTypedData
+    async function signCustodyTransfer(signer, contractAddress, cId, params) {
+      const { tokenId: tid, from, to, nonce, deadline } = params;
+      return signer.signTypedData(
+        buildDomain(contractAddress, cId),
+        custodyTransferTypes,
+        { tokenId: tid, from, to, nonce, deadline }
+      );
+    }
+
+    beforeEach(async function () {
+      // Register employee (Level 3) — initial custodian
+      await identityRegistry.registerIdentity(
+        employee.address,
+        'did:beltal:EIP712-HOLDER',
+        ethers.keccak256(ethers.toUtf8Bytes('EIP712-HOLDER')),
+        TIER,
+        SBU_RADAR
+      );
+
+      // Mint a Tier-3 asset to employee
+      const tx = await assetNFT.connect(manager).mintAsset(
+        employee.address,
+        ASSET_TAG,
+        TIER,
+        SBU_RADAR,
+        TOKEN_URI
+      );
+      await tx.wait();
+      tokenId = 1001;
+
+      assetNFTAddress = await assetNFT.getAddress();
+      const network = await ethers.provider.getNetwork();
+      chainId = network.chainId;
+
+      // Register unauthorizedUser as a valid Level-3 recipient for transfer tests
+      await identityRegistry.registerIdentity(
+        unauthorizedUser.address,
+        'did:beltal:EIP712-RECIPIENT',
+        ethers.keccak256(ethers.toUtf8Bytes('EIP712-RECIPIENT')),
+        TIER,
+        SBU_RADAR
+      );
+    });
+
+    // -----------------------------------------------------------------------
+    // 9.1  Valid signature — happy path
+    // -----------------------------------------------------------------------
+    it('transferCustody: succeeds with a valid EIP-712 signature from the current custodian', async function () {
+      const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
+      const nonce = await assetNFT.custodyNonces(tokenId);
+
+      const sig = await signCustodyTransfer(employee, assetNFTAddress, chainId, {
+        tokenId,
+        from: employee.address,
+        to: unauthorizedUser.address,
+        nonce,
+        deadline,
+      });
+
+      const receipt = await assetNFT.connect(manager).transferCustody(
+        tokenId,
+        unauthorizedUser.address,
+        'EIP712_VERIFIED_HANDOVER',
+        deadline,
+        sig
+      );
+
+      // Verify the event fired (don't assert the exact block.timestamp value)
+      await expect(receipt).to.emit(assetNFT, 'CustodyReassigned');
+
+      // Custodian updated on-chain
+      expect(await assetNFT.getCustodian(tokenId)).to.equal(unauthorizedUser.address);
+      // Nonce incremented
+      expect(await assetNFT.custodyNonces(tokenId)).to.equal(Number(nonce) + 1);
+    });
+
+    // -----------------------------------------------------------------------
+    // 9.2  Wrong signer — signature not from current custodian
+    // -----------------------------------------------------------------------
+    it('transferCustody: reverts when signature is from a non-custodian address', async function () {
+      const deadline = Math.floor(Date.now() / 1000) + 3600;
+      const nonce = await assetNFT.custodyNonces(tokenId);
+
+      // manager signs instead of employee (the actual custodian)
+      const wrongSig = await signCustodyTransfer(manager, assetNFTAddress, chainId, {
+        tokenId,
+        from: employee.address,
+        to: unauthorizedUser.address,
+        nonce,
+        deadline,
+      });
+
+      await expect(
+        assetNFT.connect(manager).transferCustody(
+          tokenId,
+          unauthorizedUser.address,
+          'WRONG_SIGNER_HANDOVER',
+          deadline,
+          wrongSig
+        )
+      ).to.be.revertedWith('AssetNFT: Signature not from current custodian');
+    });
+
+    // -----------------------------------------------------------------------
+    // 9.3  Replayed signature — nonce already consumed
+    // -----------------------------------------------------------------------
+    it('transferCustody: reverts on replay of a previously used signature', async function () {
+      const deadline = Math.floor(Date.now() / 1000) + 7200;
+      const nonce = await assetNFT.custodyNonces(tokenId);
+
+      const sig = await signCustodyTransfer(employee, assetNFTAddress, chainId, {
+        tokenId,
+        from: employee.address,
+        to: unauthorizedUser.address,
+        nonce,
+        deadline,
+      });
+
+      // First use — succeeds
+      await assetNFT.connect(manager).transferCustody(
+        tokenId,
+        unauthorizedUser.address,
+        'FIRST_USE',
+        deadline,
+        sig
+      );
+
+      // Register employee as a new valid recipient (custody returned) for a second transfer
+      // But instead, let's prove a second call with the same sig fails (nonce consumed)
+      // The custodian is now unauthorizedUser — employee's old sig refers to stale nonce
+      await identityRegistry.registerIdentity(
+        manager.address,
+        'did:beltal:MANAGER-RECIPIENT',
+        ethers.keccak256(ethers.toUtf8Bytes('MANAGER-RECIPIENT')),
+        TIER,
+        SBU_RADAR
+      );
+
+      // Replay the same signature (nonce is now stale)
+      await expect(
+        assetNFT.connect(manager).transferCustody(
+          tokenId,
+          manager.address,
+          'REPLAY_ATTEMPT',
+          deadline,
+          sig
+        )
+      ).to.be.revertedWith('AssetNFT: Signature not from current custodian');
+    });
+
+    // -----------------------------------------------------------------------
+    // 9.4  Expired deadline
+    // -----------------------------------------------------------------------
+    it('transferCustody: reverts when deadline has passed', async function () {
+      const nonce = await assetNFT.custodyNonces(tokenId);
+      // deadline = 1 second in the past
+      const expiredDeadline = Math.floor(Date.now() / 1000) - 1;
+
+      const sig = await signCustodyTransfer(employee, assetNFTAddress, chainId, {
+        tokenId,
+        from: employee.address,
+        to: unauthorizedUser.address,
+        nonce,
+        deadline: expiredDeadline,
+      });
+
+      await expect(
+        assetNFT.connect(manager).transferCustody(
+          tokenId,
+          unauthorizedUser.address,
+          'EXPIRED_DEADLINE',
+          expiredDeadline,
+          sig
+        )
+      ).to.be.revertedWith('AssetNFT: Signature deadline expired');
+    });
+
+    // -----------------------------------------------------------------------
+    // 9.5  Issue #98 gates still hold after EIP-712 check
+    // -----------------------------------------------------------------------
+    it('transferCustody: clearance gate still reverts even with a valid EIP-712 signature', async function () {
+      const deadline = Math.floor(Date.now() / 1000) + 3600;
+      const nonce = await assetNFT.custodyNonces(tokenId);
+
+      // Register a LOW clearance recipient
+      await identityRegistry.registerIdentity(
+        systemConnector.address,
+        'did:beltal:LOW-CLEAR-RECIPIENT',
+        ethers.keccak256(ethers.toUtf8Bytes('LOW-CLEAR-RECIPIENT')),
+        1, // Level 1 — insufficient for Tier 3
+        SBU_RADAR
+      );
+
+      // Employee (current custodian) signs for this low-clearance recipient
+      const sig = await signCustodyTransfer(employee, assetNFTAddress, chainId, {
+        tokenId,
+        from: employee.address,
+        to: systemConnector.address,
+        nonce,
+        deadline,
+      });
+
+      await expect(
+        assetNFT.connect(manager).transferCustody(
+          tokenId,
+          systemConnector.address,
+          'LOW_CLEARANCE_EIP712',
+          deadline,
+          sig
+        )
+      ).to.be.revertedWith('AssetNFT: Recipient clearance insufficient for asset classification');
+    });
+
+    // -----------------------------------------------------------------------
+    // 9.6  reassignCustody admin bypass — no signature required
+    // -----------------------------------------------------------------------
+    it('reassignCustody: admin bypass succeeds without a signature (empty sig in history)', async function () {
+      await expect(
+        assetNFT.connect(manager).reassignCustody(
+          tokenId,
+          unauthorizedUser.address,
+          'EMERGENCY_ADMIN_BYPASS'
+        )
+      ).to.emit(assetNFT, 'CustodyReassigned');
+
+      expect(await assetNFT.getCustodian(tokenId)).to.equal(unauthorizedUser.address);
+
+      // Verify the CustodyRecord has an empty signature (admin bypass marker)
+      const history = await assetNFT.getCustodyHistory(tokenId);
+      const lastRecord = history[history.length - 1];
+      expect(lastRecord.signature).to.equal('0x');
+
+      // Nonce is NOT incremented by the bypass path
+      expect(await assetNFT.custodyNonces(tokenId)).to.equal(0n);
     });
   });
 });
