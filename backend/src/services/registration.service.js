@@ -1,9 +1,11 @@
+import { ethers } from 'ethers';
 import prisma from '../config/db.js';
 import config from '../config/env.js';
 import logger from '../config/logger.js';
 import ApiError from '../utils/ApiError.js';
 import authService from './auth.service.js';
 import identityService from './identity.service.js';
+import chainService from './chain.service.js';
 
 // Highest clearance level accepted by registerIdentity (see admin.validator).
 const MAX_CLEARANCE = 4;
@@ -122,14 +124,34 @@ export const registrationService = {
       throw new ApiError(409, `Registration request was already ${request.status.toLowerCase()}`);
     }
 
-    const result = await identityService.registerIdentity({
-      walletAddress: request.walletAddress,
-      externalId: request.externalId,
-      fullName: request.fullName,
-      role,
-      clearanceLevel,
-      sbu: sbu ?? request.requestedSbu,
+    let checksumAddress;
+    try {
+      checksumAddress = ethers.getAddress(request.walletAddress);
+    } catch {
+      checksumAddress = request.walletAddress;
+    }
+
+    const existingUser = await prisma.user.findFirst({
+      where: { OR: [{ walletAddress: checksumAddress }, { externalId: request.externalId }] },
     });
+
+    let result;
+    if (existingUser) {
+      const grant = await chainService.grantRoleOnChain({ walletAddress: checksumAddress, role: role || existingUser.role });
+      result = {
+        user: existingUser,
+        chain: { confirmed: true, alreadyRegistered: true, roleGranted: grant.confirmed, roleTxHash: grant.txHash },
+      };
+    } else {
+      result = await identityService.registerIdentity({
+        walletAddress: request.walletAddress,
+        externalId: request.externalId,
+        fullName: request.fullName,
+        role,
+        clearanceLevel,
+        sbu: sbu ?? request.requestedSbu,
+      });
+    }
 
     await prisma.registrationRequest.update({
       where: { id },

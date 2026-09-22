@@ -87,6 +87,7 @@ export default function PendingRegistrations() {
                 await adminApi.rejectRegistration(request.id, form.reason.trim());
                 toast.success(`Request from ${request.fullName} rejected`);
             }
+            setRequests((prev) => prev.filter((r) => r.id !== request.id));
             setDialog(null);
             fetchRequests();
         } catch (err) {
@@ -397,9 +398,15 @@ function DecisionDialog({ mode, request, form, setForm, busy, onConfirm, onClose
                                     Applicant requested {SBU_LABELS[request.requestedSbu] ?? request.requestedSbu}.
                                 </p>
                             )}
+                            {busy && (
+                                <div className="flex items-center gap-2 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-[#1E5FA8] font-bold animate-pulse">
+                                    <span className="material-symbols-outlined text-base animate-spin">progress_activity</span>
+                                    <span>Encrypting dossier, pinning to IPFS, and confirming on Sepolia...</span>
+                                </div>
+                            )}
                             <p className="text-[11px] text-slate-500">
                                 {busy
-                                    ? 'Writing to the blockchain and IPFS. This can take up to a minute — please keep this window open.'
+                                    ? 'Writing to Ethereum Sepolia and IPFS. This can take 15–30 seconds — please keep this window open.'
                                     : 'Approving registers this identity on-chain and pins its encrypted dossier to IPFS.'}
                             </p>
                         </>
@@ -439,7 +446,16 @@ function DecisionDialog({ mode, request, form, setForm, busy, onConfirm, onClose
                             isApprove ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-red-600 hover:bg-red-700'
                         }`}
                     >
-                        {busy ? 'Processing…' : isApprove ? 'Confirm Approve' : 'Confirm Reject'}
+                        {busy ? (
+                            <span className="inline-flex items-center justify-center gap-1.5">
+                                <span className="material-symbols-outlined text-[16px] animate-spin">progress_activity</span>
+                                Confirming on-chain...
+                            </span>
+                        ) : isApprove ? (
+                            'Confirm Approve'
+                        ) : (
+                            'Confirm Reject'
+                        )}
                     </button>
                 </div>
             </div>

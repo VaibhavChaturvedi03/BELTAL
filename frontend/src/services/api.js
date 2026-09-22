@@ -3,7 +3,7 @@ import axios from 'axios';
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || 'http://localhost:4000/api',
   headers: { 'Content-Type': 'application/json' },
-  timeout: 15_000,
+  timeout: 60_000,
 });
 
 api.interceptors.request.use((config) => {
@@ -46,10 +46,10 @@ export const authApi = {
 export const adminApi = {
   getStats: () => api.get('/admin/stats').then((r) => r.data.data),
   listIdentities: (params = {}) => api.get('/admin/identities', { params }).then((r) => r.data.data),
-  registerIdentity: (payload) => api.post('/admin/identities', payload).then((r) => r.data.data),
-  updateRole: (id, payload) => api.patch(`/admin/identities/${id}/role`, payload).then((r) => r.data.data),
+  registerIdentity: (payload) => api.post('/admin/identities', payload, { timeout: CHAIN_TX_TIMEOUT }).then((r) => r.data.data),
+  updateRole: (id, payload) => api.patch(`/admin/identities/${id}/role`, payload, { timeout: CHAIN_TX_TIMEOUT }).then((r) => r.data.data),
   listRegistrations: (params = {}) => api.get('/admin/registrations', { params }).then((r) => r.data.data),
-  approveRegistration: (id, payload) => api.post(`/admin/registrations/${id}/approve`, payload).then((r) => r.data.data),
+  approveRegistration: (id, payload) => api.post(`/admin/registrations/${id}/approve`, payload, { timeout: CHAIN_TX_TIMEOUT }).then((r) => r.data.data),
   rejectRegistration: (id, reason) => api.post(`/admin/registrations/${id}/reject`, { reason }).then((r) => r.data.data),
   // Revoking is two on-chain transactions (identity, then role), so allow for
   // Sepolia block times.
@@ -85,7 +85,7 @@ export const recoveryApi = {
     api.delete(`/recovery/guardians/${encodeURIComponent(userId)}/${encodeURIComponent(guardianId)}`).then((r) => r.data.data),
 };
 export const assetApi = {
-  mint: (payload) => api.post('/assets', payload).then((r) => r.data.data),
+  mint: (payload) => api.post('/assets', payload, { timeout: CHAIN_TX_TIMEOUT }).then((r) => r.data.data),
   list: (params = {}) => api.get('/assets', { params }).then((r) => r.data.data),
   listMine: () => api.get('/assets/me').then((r) => r.data.data),
   getById: (id) => api.get(`/assets/${encodeURIComponent(id)}`).then((r) => r.data.data),
@@ -96,7 +96,7 @@ export const userApi = {
 export const transferApi = {
   list: (params = {}) => api.get('/transfers', { params }).then((r) => r.data.data),
   create: (payload) => api.post('/transfers/request', payload).then((r) => r.data.data),
-  approve: (id) => api.post(`/transfers/${id}/approve`).then((r) => r.data.data),
+  approve: (id) => api.post(`/transfers/${id}/approve`, undefined, { timeout: CHAIN_TX_TIMEOUT }).then((r) => r.data.data),
   reject: (id, payload = {}) => api.post(`/transfers/${id}/reject`, payload).then((r) => r.data.data),
 };
 // The audit views filter on `actionType` / `actor` / `asset` / `startDate` /
