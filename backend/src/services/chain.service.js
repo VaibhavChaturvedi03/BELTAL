@@ -123,6 +123,17 @@ export const chainService = {
     }
 
     try {
+      // Check if already active on-chain before submitting
+      try {
+        const existing = await contract.getIdentity(walletAddress);
+        if (existing && existing.isActive) {
+          logger.info(`Identity for ${walletAddress} is already registered and active on Ethereum Sepolia.`);
+          return { txHash: null, blockNumber: null, confirmed: true, alreadyRegistered: true };
+        }
+      } catch (_) {
+        // Proceed with registration if check errors
+      }
+
       const formattedHash = identityHash.startsWith('0x') ? identityHash : `0x${identityHash}`;
       const sbuBytes32 = ethers.encodeBytes32String((sbu || 'SBU_RADAR').slice(0, 31));
       const employeeDid = did || `did:beltal:${walletAddress.toLowerCase()}`;
@@ -143,6 +154,17 @@ export const chainService = {
         confirmed: true,
       };
     } catch (err) {
+      // If error indicates it was already registered (e.g. from a previous mined tx), verify and handle gracefully
+      if (err.message && (err.message.includes('Identity already registered') || err.message.includes('already registered'))) {
+        try {
+          const existing = await contract.getIdentity(walletAddress);
+          if (existing && existing.isActive) {
+            logger.info(`Identity for ${walletAddress} confirmed active on-chain after revert.`);
+            return { txHash: null, blockNumber: null, confirmed: true, alreadyRegistered: true };
+          }
+        } catch (_) {}
+      }
+
       logger.error(`On-chain identity registration failed: ${err.message}`);
       return { txHash: null, blockNumber: null, confirmed: false, error: err.message };
     }
