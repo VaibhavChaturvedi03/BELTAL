@@ -47,7 +47,13 @@ export const adminApi = {
   getStats: () => api.get('/admin/stats').then((r) => r.data.data),
   listIdentities: (params = {}) => api.get('/admin/identities', { params }).then((r) => r.data.data),
   registerIdentity: (payload) => api.post('/admin/identities', payload, { timeout: CHAIN_TX_TIMEOUT }).then((r) => r.data.data),
-  updateRole: (id, payload) => api.patch(`/admin/identities/${id}/role`, payload, { timeout: CHAIN_TX_TIMEOUT }).then((r) => r.data.data),
+  // Up to 3 sequential on-chain confirmations (updateClearance, grantRole,
+  // and — if the role actually changed — revokeRole on the old one), so a
+  // caller expecting all three (e.g. a repair retry after reinstate) should
+  // pass a longer `timeout` override.
+  updateRole: (id, payload, { timeout = CHAIN_TX_TIMEOUT } = {}) =>
+    api.patch(`/admin/identities/${id}/role`, payload, { timeout }).then((r) => r.data.data),
+  updateOrgAssignment: (id, payload) => api.patch(`/admin/identities/${id}/manager`, payload).then((r) => r.data.data),
   listRegistrations: (params = {}) => api.get('/admin/registrations', { params }).then((r) => r.data.data),
   approveRegistration: (id, payload) => api.post(`/admin/registrations/${id}/approve`, payload, { timeout: CHAIN_TX_TIMEOUT }).then((r) => r.data.data),
   rejectRegistration: (id, reason) => api.post(`/admin/registrations/${id}/reject`, { reason }).then((r) => r.data.data),
@@ -55,8 +61,9 @@ export const adminApi = {
   // Sepolia block times.
   revokeIdentity: (id, reason) =>
     api.post(`/admin/identities/${id}/revoke`, { reason }, { timeout: CHAIN_TX_TIMEOUT }).then((r) => r.data.data),
-  reinstateIdentity: (id) =>
-    api.post(`/admin/identities/${id}/reinstate`, undefined, { timeout: CHAIN_TX_TIMEOUT }).then((r) => r.data.data),
+  // Two sequential on-chain confirmations (register, then grant).
+  reinstateIdentity: (id, { timeout = CHAIN_TX_TIMEOUT } = {}) =>
+    api.post(`/admin/identities/${id}/reinstate`, undefined, { timeout }).then((r) => r.data.data),
   listZones: () => api.get('/admin/zones').then((r) => r.data.data?.zones || []),
   upsertZone: (payload) => api.post('/admin/zones', payload, { timeout: CHAIN_TX_TIMEOUT }).then((r) => r.data.data),
 };
@@ -78,7 +85,8 @@ export const recoveryApi = {
     api.post(`/recovery/${encodeURIComponent(id)}/reject`, { rejectionReason }).then((r) => r.data.data),
   execute: (id) =>
     api.post(`/recovery/${encodeURIComponent(id)}/execute`, undefined, { timeout: CHAIN_TX_TIMEOUT }).then((r) => r.data.data),
-  listGuardians: (userId) => api.get(`/recovery/guardians/${encodeURIComponent(userId)}`).then((r) => r.data.data || []),
+  // Backend returns { guardians, threshold }; this UI only ever wants the array.
+  listGuardians: (userId) => api.get(`/recovery/guardians/${encodeURIComponent(userId)}`).then((r) => r.data.data?.guardians || []),
   addGuardian: (userId, guardianId) =>
     api.post(`/recovery/guardians/${encodeURIComponent(userId)}`, { guardianId }).then((r) => r.data.data),
   removeGuardian: (userId, guardianId) =>
@@ -92,6 +100,9 @@ export const assetApi = {
 };
 export const userApi = {
   listTransferRecipients: (params = {}) => api.get('/users/transfer-recipients', { params }).then((r) => r.data.data),
+  // Fuller identity view than the JWT carries — adds seniorityGrade/manager,
+  // which are organizational metadata, not auth claims.
+  getMe: () => api.get('/users/me').then((r) => r.data.data),
 };
 export const transferApi = {
   list: (params = {}) => api.get('/transfers', { params }).then((r) => r.data.data),
@@ -130,6 +141,10 @@ export const auditApi = {
   getStats: ({ startDate, endDate } = {}) =>
     api.get('/audit/stats', { params: toAuditParams({ startDate, endDate }) }).then((r) => r.data.data),
   verify: (id) => api.get(`/audit/verify/${encodeURIComponent(id)}`).then((r) => r.data.data),
+  // Single-event fetch, for a shareable "?event=<id>" deep link — the row may
+  // not be on the caller's currently loaded/filtered page, so this can't
+  // just reuse the list.
+  getById: (id) => api.get(`/audit/${encodeURIComponent(id)}`).then((r) => toAuditEvent(r.data.data)),
   // Indexed records for one transaction hash, for cross-checking against the chain.
   findByTxHash: (txHash) =>
     api.get('/audit', { params: { txHash, limit: 10 } }).then((r) => (r.data.data?.events || []).map(toAuditEvent)),

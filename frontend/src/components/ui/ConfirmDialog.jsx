@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import useModalA11y from '../../hooks/useModalA11y';
 
 const TONES = {
@@ -28,7 +30,15 @@ export default function ConfirmDialog({
     });
     const t = TONES[tone] || TONES.primary;
 
-    return (
+    // Lock page scrolling while the dialog is mounted
+    useEffect(() => {
+        document.body.style.overflow = 'hidden';
+        return () => {
+            document.body.style.overflow = 'unset';
+        };
+    }, []);
+
+    return createPortal(
         <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 ui-fade-in">
             <div
                 ref={dialogRef}
@@ -82,6 +92,7 @@ export default function ConfirmDialog({
                     </button>
                 </div>
             </div>
-        </div>
+        </div>,
+        document.body
     );
 }

@@ -45,11 +45,12 @@ function installFakePrisma() {
 }
 installFakePrisma();
 
-const chain = { revoke: {}, role: {}, register: {}, grant: {}, identity: {}, asset: {} };
+const chain = { revoke: {}, role: {}, register: {}, grant: {}, assignRole: {}, identity: {}, asset: {} };
 chainService.revokeIdentityOnChain = async (a) => { calls.push(['revokeIdentity', a.walletAddress]); return chain.revoke; };
 chainService.revokeRoleOnChain = async (a) => { calls.push(['revokeRole', a.role]); return chain.role; };
 chainService.registerIdentityOnChain = async (a) => { calls.push(['register', a.walletAddress]); return chain.register; };
 chainService.grantRoleOnChain = async (a) => { calls.push(['grant', a.role]); return chain.grant; };
+chainService.assignRoleOnChain = async (a) => { calls.push(['assignRole', a.role]); return chain.assignRole; };
 chainService.verifyIdentityOnChain = async () => chain.identity;
 chainService.getAssetOnChain = async () => chain.asset;
 
@@ -124,6 +125,14 @@ test('updateRole refuses a revoked identity', async () => {
   await assert.rejects(identityService.updateRole('u1', { role: 'USER' }), (e) => (e.statusCode ?? e.status) === 409);
 });
 
+test('updateRole: "Identity not active" on a non-revoked user gets the never-registered-on-chain message, not a generic one', async () => {
+  reset();
+  chain.assignRole = { confirmed: false, error: 'execution reverted: IdentityRegistry: Identity not active' };
+  const { user, chain: c } = await identityService.updateRole('u1', { role: 'AUDITOR' });
+  assert.equal(user.role, 'AUDITOR'); // still applied off-chain
+  assert.match(c.warning, /never fully registered on-chain/);
+});
+
 // ---- reinstate -----------------------------------------------------------
 test('reinstate: re-registers, re-grants role, clears the stamp', async () => {
   reset(); users[0].revokedAt = new Date(); users[0].revocationReason = 'x';
@@ -135,9 +144,22 @@ test('reinstate: re-registers, re-grants role, clears the stamp', async () => {
   assert.equal(c.roleGranted, true);
 });
 
-test('reinstate: not revoked is a 409', async () => {
+test('reinstate: also repairs a non-revoked identity that was never confirmed on-chain (no 409 — this is the fix for that state, not an error)', async () => {
   reset();
-  await assert.rejects(identityService.reinstateIdentity({ id: 'admin1' }, 'u1'), (e) => (e.statusCode ?? e.status) === 409);
+  chain.register = ok; chain.grant = { ...ok, txHash: '0xg' };
+  const { user, chain: c } = await identityService.reinstateIdentity({ id: 'admin1' }, 'u1');
+  assert.deepEqual(calls, [['register', '0xAAA'], ['grant', 'MANAGER']]);
+  assert.equal(user.revokedAt, null);
+  assert.equal(c.roleGranted, true);
+});
+
+test('reinstate: re-registering an already-active identity is a harmless no-op', async () => {
+  reset();
+  chain.register = { confirmed: false, error: 'execution reverted: IdentityRegistry: Identity already registered' };
+  chain.grant = ok;
+  const { user, chain: c } = await identityService.reinstateIdentity({ id: 'admin1' }, 'u1');
+  assert.equal(user.revokedAt, null);
+  assert.equal(c.confirmed, true);
 });
 
 // ---- anti-tamper: identity ----------------------------------------------

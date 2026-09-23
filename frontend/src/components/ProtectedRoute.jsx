@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth, roleHomePath } from '../context/AuthContext';
 import { useToast } from './ui/Toast';
@@ -6,7 +6,13 @@ import { useToast } from './ui/Toast';
 // Sends a signed-in user back to their own portal, saying why.
 function DeniedRedirect({ to, message }) {
   const toast = useToast();
+  // React StrictMode (dev only) intentionally double-invokes effects to
+  // surface non-idempotent ones; without this guard the "Access Denied"
+  // toast fires twice for the same redirect.
+  const shown = useRef(false);
   useEffect(() => {
+    if (shown.current) return;
+    shown.current = true;
     toast.warning(message, 'Access Denied');
   }, [toast, message]);
   return <Navigate to={to} replace />;

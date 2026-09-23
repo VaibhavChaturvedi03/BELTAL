@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { auditApi } from '../../services/api';
 import Card, { CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import useModalA11y from '../../hooks/useModalA11y';
+import { useToast } from '../../components/ui/Toast';
 import {
     AUDIT_EVENT_TYPES,
     getActionIcon,
@@ -17,6 +19,8 @@ export default function AuditTrailExplorer() {
     const [total, setTotal] = useState(0);
     const [selectedEvent, setSelectedEvent] = useState(null);
     const [pagination, setPagination] = useState({ page: 1, limit: 20 });
+    const [searchParams, setSearchParams] = useSearchParams();
+    const toast = useToast();
 
     const [filters, setFilters] = useState({
         actor: '',
@@ -54,6 +58,34 @@ export default function AuditTrailExplorer() {
     useEffect(() => {
         fetchEvents();
     }, [fetchEvents]);
+
+    // Deep link: "?event=<id>" opens that event's detail modal on load, fetched
+    // fresh via GET /audit/:id rather than assumed to be on the current page.
+    const deepLinkId = searchParams.get('event');
+    useEffect(() => {
+        if (!deepLinkId || selectedEvent?.id === deepLinkId) return;
+        let cancelled = false;
+        auditApi.getById(deepLinkId)
+            .then((event) => { if (!cancelled) setSelectedEvent(event); })
+            .catch((err) => {
+                if (cancelled) return;
+                console.error('Failed to load linked audit event', err);
+                toast.error(err?.uiMessage || 'That audit event could not be found.', 'Link unavailable');
+                setSearchParams((prev) => { prev.delete('event'); return prev; }, { replace: true });
+            });
+        return () => { cancelled = true; };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [deepLinkId]);
+
+    const openEvent = (event) => {
+        setSelectedEvent(event);
+        setSearchParams((prev) => { prev.set('event', event.id); return prev; });
+    };
+
+    const closeEvent = () => {
+        setSelectedEvent(null);
+        setSearchParams((prev) => { prev.delete('event'); return prev; });
+    };
 
     const handleFilterChange = (key, value) => {
         setFilters(prev => ({ ...prev, [key]: value }));
@@ -214,11 +246,11 @@ export default function AuditTrailExplorer() {
                                             events.map((event) => (
                                                 <tr
                                                     key={event.id}
-                                                    onClick={() => setSelectedEvent(event)}
+                                                    onClick={() => openEvent(event)}
                                                     onKeyDown={(e) => {
                                                         if (e.key === 'Enter' || e.key === ' ') {
                                                             e.preventDefault();
-                                                            setSelectedEvent(event);
+                                                            openEvent(event);
                                                         }
                                                     }}
                                                     tabIndex={0}
@@ -265,27 +297,35 @@ export default function AuditTrailExplorer() {
 
                             {/* Pagination */}
                             {totalPages > 1 && (
-                                <div className="flex items-center justify-between mt-4 pt-4 border-t border-[#1F293D]">
+                                <div className="flex flex-wrap items-center justify-between gap-3 mt-4 pt-4 border-t border-[#1F293D]">
                                     <div className="text-xs text-slate-400">
-                                        Showing {(pagination.page - 1) * pagination.limit + 1} - {Math.min(pagination.page * pagination.limit, total)} of {total}
+                                        Showing <span className="font-bold text-slate-300">{(pagination.page - 1) * pagination.limit + 1}</span>
+                                        {' '}-{' '}
+                                        <span className="font-bold text-slate-300">{Math.min(pagination.page * pagination.limit, total)}</span>
+                                        {' '}of{' '}
+                                        <span className="font-bold text-slate-300">{total}</span>
                                     </div>
-                                    <div className="flex gap-2">
+                                    <div className="flex items-center gap-2">
                                         <button
+                                            type="button"
                                             onClick={() => setPagination(prev => ({ ...prev, page: Math.max(1, prev.page - 1) }))}
                                             disabled={pagination.page === 1}
-                                            className="px-3 py-1.5 bg-[#1F293D] hover:bg-[#2D3748] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded transition-colors"
+                                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded border border-[#1E5FA8] text-[#1E5FA8] text-xs font-bold transition-colors hover:bg-[#1E5FA8] hover:text-white disabled:cursor-not-allowed disabled:border-[#D7E0EA] disabled:text-slate-400 disabled:hover:bg-transparent disabled:hover:text-slate-400"
                                         >
+                                            <span className="material-symbols-outlined text-[16px]" aria-hidden="true">chevron_left</span>
                                             Previous
                                         </button>
-                                        <span className="px-3 py-1.5 text-xs text-slate-400">
+                                        <span className="px-3 py-1.5 text-xs font-bold text-slate-400">
                                             Page {pagination.page} of {totalPages}
                                         </span>
                                         <button
+                                            type="button"
                                             onClick={() => setPagination(prev => ({ ...prev, page: Math.min(totalPages, prev.page + 1) }))}
                                             disabled={pagination.page === totalPages}
-                                            className="px-3 py-1.5 bg-[#1F293D] hover:bg-[#2D3748] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded transition-colors"
+                                            className="inline-flex items-center gap-1 px-3 py-1.5 rounded border border-[#1E5FA8] text-[#1E5FA8] text-xs font-bold transition-colors hover:bg-[#1E5FA8] hover:text-white disabled:cursor-not-allowed disabled:border-[#D7E0EA] disabled:text-slate-400 disabled:hover:bg-transparent disabled:hover:text-slate-400"
                                         >
                                             Next
+                                            <span className="material-symbols-outlined text-[16px]" aria-hidden="true">chevron_right</span>
                                         </button>
                                     </div>
                                 </div>
@@ -299,7 +339,7 @@ export default function AuditTrailExplorer() {
             {selectedEvent && (
                 <EventDetailModal
                     event={selectedEvent}
-                    onClose={() => setSelectedEvent(null)}
+                    onClose={closeEvent}
                 />
             )}
         </div>
@@ -309,9 +349,20 @@ export default function AuditTrailExplorer() {
 // Event Detail Modal Component
 function EventDetailModal({ event, onClose }) {
     const dialogRef = useModalA11y(onClose);
+    const toast = useToast();
+
+    const copyLink = async () => {
+        const url = `${window.location.origin}${window.location.pathname}?event=${event.id}`;
+        try {
+            await navigator.clipboard.writeText(url);
+            toast.success('Link copied — anyone with Auditor/Admin access can open this exact event.', 'Copied');
+        } catch {
+            toast.error('Could not copy automatically. The link is in your address bar.', 'Copy failed');
+        }
+    };
 
     return (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
             <div
                 ref={dialogRef}
                 role="dialog"
@@ -323,14 +374,24 @@ function EventDetailModal({ event, onClose }) {
                     {/* Header */}
                     <div className="flex items-center justify-between pb-4 border-b border-[#1F293D]">
                         <h2 id="event-detail-title" className="text-xl font-black text-white">Event Details</h2>
-                        <button
-                            type="button"
-                            onClick={onClose}
-                            aria-label="Close event details"
-                            className="text-slate-400 hover:text-white transition-colors"
-                        >
-                            <span className="material-symbols-outlined">close</span>
-                        </button>
+                        <div className="flex items-center gap-3">
+                            <button
+                                type="button"
+                                onClick={copyLink}
+                                className="inline-flex items-center gap-1 text-xs font-bold text-[#1E5FA8] hover:text-[#7ab0fe] transition-colors"
+                            >
+                                <span className="material-symbols-outlined text-[16px]" aria-hidden="true">link</span>
+                                Copy link
+                            </button>
+                            <button
+                                type="button"
+                                onClick={onClose}
+                                aria-label="Close event details"
+                                className="text-slate-400 hover:text-white transition-colors"
+                            >
+                                <span className="material-symbols-outlined">close</span>
+                            </button>
+                        </div>
                     </div>
 
                     {/* Event Info */}

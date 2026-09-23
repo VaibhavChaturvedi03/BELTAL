@@ -14,7 +14,7 @@ export default function InitiateTransfer() {
     const [loading, setLoading] = useState(false);
     const [assets, setAssets] = useState([]);
     const [loadError, setLoadError] = useState(null);
-    const { members: teamMembers, error: membersError } = useTeamMembers(sbu);
+    const { members: teamMembers, error: membersError } = useTeamMembers(sbu, true);
     const [formData, setFormData] = useState({
         assetId: '',
         toUserId: '',

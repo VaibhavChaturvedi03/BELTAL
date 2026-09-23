@@ -131,10 +131,35 @@ export const identityService = {
       previousRole: user.role,
       clearanceLevel: clearanceLevel ?? user.clearanceLevel,
     });
+    // A chain failure here must not block the update: this endpoint is the
+    // documented way to re-apply a role/clearance grant that failed earlier
+    // (at registration, or on a previous call here) — hard-failing it the
+    // same way would leave no way to ever recover from a persistent chain
+    // problem (RPC hiccup, signer without the on-chain admin role, etc.).
+    // Mirrors registerIdentity's tolerance of a failed role grant.
+    //
+    // One revert reason gets a distinct message: IdentityRegistry's
+    // "Identity not active" require fires both when a DID was genuinely
+    // revoked *and* when the address was never registered on-chain at all
+    // (Solidity defaults an unwritten struct's `isActive` to false, so the
+    // contract cannot tell the two apart — see IdentityRegistry.sol
+    // updateClearance/revokeIdentity). The revokedAt check above already
+    // rules out a real revocation, so if this specific revert reaches here,
+    // the DB row was never backed by a successful on-chain registration
+    // (e.g. registerIdentity's documented "confirmed:false, no error"
+    // fallback when the contracts weren't reachable/configured at creation
+    // time, or an --offchain demo seed). Retrying this same role/clearance
+    // update can never fix that — only re-registering the identity on-chain
+    // can — so say so instead of leaving the admin to retry a call that is
+    // guaranteed to keep failing the same way.
+    const chain = { ...chainResult };
     if (chainResult.error) {
-      throw new ApiError(502, `On-chain role/clearance update failed: ${chainResult.error}`);
-    }
-    if (!chainResult.confirmed) {
+      const neverRegisteredOnChain = /identity not active/i.test(chainResult.error);
+      chain.warning = neverRegisteredOnChain
+        ? 'On-chain role/clearance update failed because this identity was never fully registered on-chain (the database record exists, but IdentityRegistry has no active entry for this wallet). Retrying this role/clearance update will not fix it — re-register the identity on-chain (e.g. via reinstate, or re-run registration) before retrying.'
+        : `On-chain role/clearance update failed and was applied off-chain only: ${chainResult.error}`;
+      logger.error(`Role/clearance update for ${user.walletAddress} failed on-chain: ${chainResult.error}`);
+    } else if (!chainResult.confirmed) {
       logger.warn(`Role/clearance update for ${user.walletAddress} applied off-chain only pending contract integration.`);
     }
 
@@ -146,7 +171,78 @@ export const identityService = {
       },
     });
 
-    return { user: updated, chain: chainResult };
+    return { user: updated, chain };
+  },
+
+  /**
+   * Admin: set who an identity reports to and/or their organizational grade
+   * (an approximation of BEL's E1-E9 executive ladder — seniority/rank, not
+   * the same thing as clearanceLevel, which is security-classification
+   * access). Purely off-chain and independent of RBAC/SBU: it exists so the
+   * org chart is explicit instead of implicit in "whoever has role MANAGER
+   * in my SBU". No chain call, since neither reporting lines nor grade gate
+   * anything the contracts enforce.
+   */
+  async updateOrgAssignment(userId, { managerId, seniorityGrade }) {
+    if (!prisma) throw new ApiError(503, 'Database unavailable');
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new ApiError(404, 'Identity not found');
+    if (user.revokedAt) {
+      throw new ApiError(409, 'This identity is revoked. Reinstate it before changing its manager or grade.');
+    }
+
+    const data = {};
+    if (seniorityGrade !== undefined) data.seniorityGrade = seniorityGrade;
+
+    if (managerId !== undefined) {
+      if (managerId === null) {
+        data.managerId = null;
+      } else {
+        if (managerId === userId) {
+          throw new ApiError(400, 'A person cannot be their own manager');
+        }
+
+        const manager = await prisma.user.findUnique({ where: { id: managerId } });
+        if (!manager) throw new ApiError(404, 'Manager identity not found');
+        if (manager.revokedAt) throw new ApiError(409, 'Cannot assign a revoked identity as a manager');
+
+        // Walk the prospective manager's own chain up to the root to make
+        // sure this assignment would not create a cycle (A reports to B who
+        // — directly or transitively — reports to A).
+        const seen = new Set([userId]);
+        let cursorId = manager.managerId;
+        while (cursorId) {
+          if (cursorId === userId) {
+            throw new ApiError(400, 'This assignment would create a reporting cycle');
+          }
+          if (seen.has(cursorId)) break; // a pre-existing cycle elsewhere; not this call's problem
+          seen.add(cursorId);
+          const next = await prisma.user.findUnique({ where: { id: cursorId }, select: { managerId: true } });
+          cursorId = next?.managerId ?? null;
+        }
+
+        const effectiveGrade = seniorityGrade !== undefined ? seniorityGrade : user.seniorityGrade;
+        if (effectiveGrade != null && manager.seniorityGrade != null && manager.seniorityGrade < effectiveGrade) {
+          throw new ApiError(
+            400,
+            `Manager's grade (${manager.seniorityGrade}) must be at or above the report's grade (${effectiveGrade})`
+          );
+        }
+
+        data.managerId = managerId;
+      }
+    }
+
+    if (Object.keys(data).length === 0) {
+      throw new ApiError(400, 'At least one of managerId or seniorityGrade must be provided');
+    }
+
+    return prisma.user.update({
+      where: { id: userId },
+      data,
+      include: { manager: { select: { id: true, displayName: true, seniorityGrade: true } } },
+    });
   },
 
   /**
@@ -224,17 +320,24 @@ export const identityService = {
   },
 
   /**
-   * Admin: lift a quarantine. The registry has no un-revoke, so this
-   * re-registers the same wallet with the same DID, identity hash, clearance and
-   * SBU (the contract allows it because the record is inactive), then re-grants
-   * the role. Guardian recovery uses the same primitive to re-anchor an identity.
+   * Admin: lift a quarantine, OR repair an identity that's active in the DB
+   * but was never actually confirmed on-chain (see updateRole's "Identity not
+   * active" handling — IdentityRegistry can't tell "revoked" and "never
+   * registered" apart, so neither can this function need to). Either way the
+   * fix is the same primitive: the registry has no un-revoke, so this
+   * re-registers the same wallet with the same DID, identity hash, clearance
+   * and SBU (the contract allows it whenever the record is inactive, for
+   * whatever reason), then re-grants the role. Guardian recovery uses the
+   * same primitive to re-anchor an identity. Deliberately does NOT require
+   * user.revokedAt: re-registering an identity that's already properly active
+   * on-chain is a safe no-op (tolerated below as "already registered"), so
+   * there's no unsafe case to guard against by requiring it.
    */
   async reinstateIdentity(actor, userId) {
     if (!prisma) throw new ApiError(503, 'Database unavailable');
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new ApiError(404, 'Identity not found');
-    if (!user.revokedAt) throw new ApiError(409, 'This identity is not revoked');
 
     const register = await chainService.registerIdentityOnChain({
       walletAddress: user.walletAddress,

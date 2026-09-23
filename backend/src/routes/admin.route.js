@@ -5,6 +5,7 @@ import {
   listIdentities,
   registerIdentity,
   updateRole,
+  updateOrgAssignment,
   revokeIdentity,
   reinstateIdentity,
   listRegistrations,
@@ -19,6 +20,7 @@ import validate from '../middleware/validate.js';
 import {
   registerIdentitySchema,
   updateRoleSchema,
+  updateOrgAssignmentSchema,
   revokeIdentitySchema,
   listIdentitiesQuerySchema,
   listRegistrationsQuerySchema,
@@ -38,6 +40,9 @@ router.get('/stats', getStats);
 router.get('/identities', validate(listIdentitiesQuerySchema, 'query'), listIdentities);
 router.post('/identities', validate(registerIdentitySchema), registerIdentity);
 router.patch('/identities/:id/role', validate(updateRoleSchema), updateRole);
+// Org-structure layer: who this identity reports to, and their grade (BEL
+// executive-ladder approximation). Off-chain only, no chain call.
+router.patch('/identities/:id/manager', validate(updateOrgAssignmentSchema), updateOrgAssignment);
 
 // Quarantine & revocation: revoke on-chain (identity + role), or lift it again.
 router.post('/identities/:id/revoke', validate(revokeIdentitySchema), revokeIdentity);

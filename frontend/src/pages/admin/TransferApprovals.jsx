@@ -93,12 +93,17 @@ export default function TransferApprovals() {
                     <h1 className="text-2xl font-black text-white tracking-wide">Pending Transfer Approvals</h1>
                 </div>
 
+                {/* Managers oversee one SBU, so "their team" maps onto /team-assets. An
+                    admin has no SBU of their own to manage — /team-assets would just
+                    filter by whatever SBU the admin happens to be registered under,
+                    which isn't "their team" in any meaningful sense — so admins get
+                    the unrestricted, all-SBU asset registry instead. */}
                 <button
                     type="button"
-                    onClick={() => navigate('/team-assets')}
+                    onClick={() => navigate(user?.role === 'ADMIN' ? '/admin/assets' : '/team-assets')}
                     className="px-4 py-2 bg-[#1E5FA8] hover:bg-[#164a85] text-white text-xs font-bold rounded transition-colors"
                 >
-                    View Team Assets
+                    {user?.role === 'ADMIN' ? 'View Asset Registry' : 'View Team Assets'}
                 </button>
             </div>
 
@@ -251,7 +256,7 @@ function RejectDialog({ reason, processing, onReasonChange, onConfirm, onClose }
                     <button
                         type="button"
                         onClick={onClose}
-                        className="flex-1 px-4 py-2 border border-[#1F293D] text-slate-400 hover:text-white hover:bg-white/5 rounded font-bold text-sm transition-colors"
+                        className="flex-1 px-4 py-2 border border-[#1F293D] text-slate-400 hover:text-[#0D2B4E] hover:bg-black/5 rounded font-bold text-sm transition-colors"
                     >
                         Cancel
                     </button>

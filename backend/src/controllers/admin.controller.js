@@ -62,6 +62,9 @@ export const listIdentities = async (req, res, next) => {
           role: true,
           clearanceLevel: true,
           sbu: true,
+          seniorityGrade: true,
+          managerId: true,
+          manager: { select: { id: true, displayName: true } },
           revokedAt: true,
           revocationReason: true,
           revokeTxHash: true,
@@ -120,6 +123,23 @@ export const updateRole = async (req, res, next) => {
         role: user.role,
         clearanceLevel: user.clearanceLevel,
         chain,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateOrgAssignment = async (req, res, next) => {
+  try {
+    const user = await identityService.updateOrgAssignment(req.params.id, req.body);
+    return res.status(200).json({
+      success: true,
+      data: {
+        id: user.id,
+        managerId: user.managerId,
+        manager: user.manager,
+        seniorityGrade: user.seniorityGrade,
       },
     });
   } catch (error) {
@@ -281,6 +301,7 @@ export default {
   listIdentities,
   registerIdentity,
   updateRole,
+  updateOrgAssignment,
   revokeIdentity,
   reinstateIdentity,
   listRegistrations,

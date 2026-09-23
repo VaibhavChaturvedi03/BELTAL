@@ -15,7 +15,10 @@ export const userController = {
         throw new ApiError(503, 'Database unavailable');
       }
 
-      const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+      const user = await prisma.user.findUnique({
+        where: { id: req.user.id },
+        include: { manager: { select: { id: true, displayName: true, seniorityGrade: true } } },
+      });
       if (!user) {
         throw new ApiError(404, 'Identity not found');
       }
@@ -31,6 +34,8 @@ export const userController = {
           role: user.role,
           clearanceLevel: user.clearanceLevel,
           sbu: user.sbu,
+          seniorityGrade: user.seniorityGrade,
+          manager: user.manager,
           createdAt: user.createdAt,
         },
       });
@@ -41,13 +46,20 @@ export const userController = {
 
   /**
    * GET /api/users/transfer-recipients — candidate recipients other than the
-   * caller, for the transfer forms and the manager's team roster.
+   * caller, for the transfer forms, cross-SBU pass issuance and the PACS badge
+   * simulator's employee directory.
    *
    * Scope: Admin/Auditor see everyone. Users and Managers see personnel of their
    * own SBU (plus SBUs opened by their active cross-SBU passes) and visitors
    * holding an active pass into their SBU. Only the fields the forms render are
    * returned; role and wallet address go to oversight roles (the manager roster
    * shows and searches them), never to plain users.
+   *
+   * SYSTEM_CONNECTOR (a machine-only identity) is never eligible here. With
+   * `?custodyOnly=true` (the asset-transfer recipient picker), AUDITOR is
+   * excluded too — auditors are read-only and were never meant to hold asset
+   * custody, unlike a pass or a badge-tap, which are about physical/zone
+   * access rather than owning equipment.
    */
   async listTransferRecipients(req, res, next) {
     try {
@@ -60,9 +72,12 @@ export const userController = {
         ? Math.min(Math.max(requestedLimit, 1), 100)
         : 100;
 
+      const custodyOnly = req.query.custodyOnly === 'true';
+      const excludedRoles = custodyOnly ? ['SYSTEM_CONNECTOR', 'AUDITOR'] : ['SYSTEM_CONNECTOR'];
+
       // A revoked identity cannot take custody (the contract rejects it), so
       // do not offer it as a recipient.
-      const where = { id: { not: req.user.id }, revokedAt: null };
+      const where = { id: { not: req.user.id }, revokedAt: null, role: { notIn: excludedRoles } };
       const scope = await scopeService.getSbuScope(req.user);
       if (scope) {
         where.OR = [
@@ -84,7 +99,15 @@ export const userController = {
           did: true,
           clearanceLevel: true,
           sbu: true,
-          ...(showIdentity ? { walletAddress: true, role: true } : {}),
+          ...(showIdentity
+            ? {
+                walletAddress: true,
+                role: true,
+                seniorityGrade: true,
+                managerId: true,
+                manager: { select: { id: true, displayName: true } },
+              }
+            : {}),
         },
       });
 

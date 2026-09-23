@@ -6,29 +6,57 @@ import { useTransaction } from '../../context/TransactionContext';
 import useModalA11y from '../../hooks/useModalA11y';
 import Card, { CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 import { RoleBadge, ClearanceBadge } from '../../components/ui/Badge';
+import { gradeLabel, GRADE_OPTIONS } from '../../config/grades';
+
+// The reinstate-then-retry repair path can chain up to 5 sequential Sepolia
+// confirmations (register + grant, then updateClearance + grant + revoke-old)
+// across its two calls — the default 90s per-call budget assumes at most 2-3.
+const REPAIR_TIMEOUT = 180_000;
 
 export default function IdentityTable({ refreshTrigger = 0, onRegisterClick }) {
-  const { showError } = useTransaction();
+  const { showError, showSuccess, showPending, removeToast } = useTransaction();
   const [identities, setIdentities] = useState([]);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [search, setSearch] = useState('');
   const [sbuFilter, setSbuFilter] = useState('');
   const [tierFilter, setTierFilter] = useState('');
+  const [pagination, setPagination] = useState({ page: 1, limit: 20 });
   const [editModal, setEditModal] = useState({ open: false, identity: null });
   const [saving, setSaving] = useState(false);
+
+  // The "Reports To" dropdown needs a broad candidate pool, independent of
+  // whatever page/search/filter the table itself is showing.
+  const [managerCandidates, setManagerCandidates] = useState([]);
 
   const fetchIdentities = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const data = await adminApi.listIdentities({ limit: 100 });
+      const data = await adminApi.listIdentities({
+        search: search || undefined,
+        sbu: sbuFilter || undefined,
+        clearance: tierFilter || undefined,
+        page: pagination.page,
+        limit: pagination.limit,
+      });
       setIdentities(data.users || []);
+      setTotal(data.total ?? 0);
     } catch (err) {
       console.error("Failed to fetch identities", err);
       setError(err.uiMessage || 'The identity registry could not be loaded.');
     } finally {
       setLoading(false);
+    }
+  }, [search, sbuFilter, tierFilter, pagination.page, pagination.limit]);
+
+  const fetchManagerCandidates = useCallback(async () => {
+    try {
+      const data = await adminApi.listIdentities({ limit: 100, status: 'ACTIVE' });
+      setManagerCandidates(data.users || []);
+    } catch (err) {
+      console.error("Failed to fetch manager candidates", err);
     }
   }, []);
 
@@ -36,33 +64,78 @@ export default function IdentityTable({ refreshTrigger = 0, onRegisterClick }) {
     fetchIdentities();
   }, [fetchIdentities, refreshTrigger]);
 
+  useEffect(() => {
+    fetchManagerCandidates();
+  }, [fetchManagerCandidates, refreshTrigger]);
+
+  const updateSearch = (value) => {
+    setSearch(value);
+    setPagination((prev) => ({ ...prev, page: 1 }));
+  };
+
+  const updateSbuFilter = (value) => {
+    setSbuFilter(value);
+    setPagination((prev) => ({ ...prev, page: 1 }));
+  };
+
+  const updateTierFilter = (value) => {
+    setTierFilter(value);
+    setPagination((prev) => ({ ...prev, page: 1 }));
+  };
+
+  const totalPages = Math.max(1, Math.ceil(total / pagination.limit));
+
   const closeEditModal = useCallback(() => setEditModal({ open: false, identity: null }), []);
 
   const handleEditSave = async () => {
     if (!editModal.identity) return;
     setSaving(true);
     try {
-      await adminApi.updateRole(editModal.identity.id, {
+      const rolePayload = {
         role: editModal.identity.role,
         clearanceLevel: editModal.identity.clearanceLevel,
+      };
+      let result = await adminApi.updateRole(editModal.identity.id, rolePayload);
+
+      // This specific warning means the identity was never actually
+      // confirmed on-chain (DB row exists, IdentityRegistry doesn't). No
+      // amount of retrying this same call fixes that — but reinstateIdentity's
+      // re-register-on-chain primitive does, safely (a no-op if the identity
+      // turns out to already be active). Self-heal once, automatically.
+      const needsRepair = /never fully registered on-chain/i.test(result?.chain?.warning || '');
+      if (needsRepair) {
+        // The repair (re-register) plus the retried update can chain up to 5
+        // sequential Sepolia confirmations between them — give this path real
+        // headroom and tell the admin it'll take longer than usual.
+        const pendingId = showPending('Repairing on-chain registration, then re-applying the update — this can take a minute or two...');
+        try {
+          await adminApi.reinstateIdentity(editModal.identity.id, { timeout: REPAIR_TIMEOUT });
+          result = await adminApi.updateRole(editModal.identity.id, rolePayload, { timeout: REPAIR_TIMEOUT });
+        } finally {
+          removeToast(pendingId);
+        }
+      }
+
+      await adminApi.updateOrgAssignment(editModal.identity.id, {
+        managerId: editModal.identity.managerId || null,
+        seniorityGrade: editModal.identity.seniorityGrade || null,
       });
+
+      if (result?.chain?.warning) {
+        showError(result.chain.warning);
+      } else if (needsRepair) {
+        showSuccess("This identity was re-registered on-chain to fix a stale record, then updated.");
+      }
+
       closeEditModal();
       fetchIdentities();
+      fetchManagerCandidates();
     } catch (err) {
       showError("Failed to update: " + (err.uiMessage || err.message));
     } finally {
       setSaving(false);
     }
   };
-
-  const filtered = identities.filter(u => {
-    const matchSearch = !search ||
-      (u.displayName || '').toLowerCase().includes(search.toLowerCase()) ||
-      (u.walletAddress || '').toLowerCase().includes(search.toLowerCase());
-    const matchSbu = !sbuFilter || u.sbu === sbuFilter;
-    const matchTier = !tierFilter || String(u.clearanceLevel) === tierFilter;
-    return matchSearch && matchSbu && matchTier;
-  });
 
   return (
     <Card className="bg-white border-slate-200 shadow-sm">
@@ -73,7 +146,7 @@ export default function IdentityTable({ refreshTrigger = 0, onRegisterClick }) {
               Sovereign Identity Registry
             </CardTitle>
             <p className="text-xs text-slate-500 mt-0.5">
-              {filtered.length} identit{filtered.length === 1 ? 'y' : 'ies'} provisioned
+              {total} identit{total === 1 ? 'y' : 'ies'} provisioned
             </p>
           </div>
           <button
@@ -95,13 +168,13 @@ export default function IdentityTable({ refreshTrigger = 0, onRegisterClick }) {
             aria-label="Search identities by name or wallet address"
             placeholder="Search wallet address or DID..."
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => updateSearch(e.target.value)}
             className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-[#0A1F3D] placeholder-slate-400 focus:border-[#1E5FA8] outline-none"
           />
           <select
             aria-label="Filter by SBU"
             value={sbuFilter}
-            onChange={(e) => setSbuFilter(e.target.value)}
+            onChange={(e) => updateSbuFilter(e.target.value)}
             className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-[#0A1F3D] focus:border-[#1E5FA8] outline-none"
           >
             <option value="">All SBUs</option>
@@ -113,7 +186,7 @@ export default function IdentityTable({ refreshTrigger = 0, onRegisterClick }) {
           <select
             aria-label="Filter by clearance tier"
             value={tierFilter}
-            onChange={(e) => setTierFilter(e.target.value)}
+            onChange={(e) => updateTierFilter(e.target.value)}
             className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-[#0A1F3D] focus:border-[#1E5FA8] outline-none"
           >
             <option value="">All Tiers</option>
@@ -144,19 +217,21 @@ export default function IdentityTable({ refreshTrigger = 0, onRegisterClick }) {
                   <th className="px-3 py-2 font-bold">Role</th>
                   <th className="px-3 py-2 font-bold">Clearance</th>
                   <th className="px-3 py-2 font-bold">SBU</th>
+                  <th className="px-3 py-2 font-bold">Grade</th>
+                  <th className="px-3 py-2 font-bold">Reports To</th>
                   <th className="px-3 py-2 font-bold">Registry Status</th>
                   <th className="px-3 py-2 font-bold text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filtered.length === 0 ? (
+                {identities.length === 0 ? (
                   <tr>
-                    <td colSpan="6" className="px-3 py-6 text-center text-slate-400">
+                    <td colSpan="8" className="px-3 py-6 text-center text-slate-400">
                       No identities found
                     </td>
                   </tr>
                 ) : (
-                  filtered.map((user) => (
+                  identities.map((user) => (
                     <tr key={user.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="px-3 py-2">
                         <div className="font-mono text-[#0A1F3D] font-bold">
@@ -172,6 +247,12 @@ export default function IdentityTable({ refreshTrigger = 0, onRegisterClick }) {
                       </td>
                       <td className="px-3 py-2 text-slate-600">
                         {user.sbu?.replace('SBU_', '') || 'N/A'}
+                      </td>
+                      <td className="px-3 py-2 text-slate-600 whitespace-nowrap">
+                        {gradeLabel(user.seniorityGrade)}
+                      </td>
+                      <td className="px-3 py-2 text-slate-600">
+                        {user.manager?.displayName || <span className="text-slate-400">— none —</span>}
                       </td>
                       <td className="px-3 py-2">
                         {user.revokedAt ? (
@@ -199,11 +280,11 @@ export default function IdentityTable({ refreshTrigger = 0, onRegisterClick }) {
                           <button
                             type="button"
                             onClick={() => setEditModal({ open: true, identity: { ...user } })}
-                            aria-label={`Edit role for ${user.displayName || user.walletAddress}`}
+                            aria-label={`Edit identity for ${user.displayName || user.walletAddress}`}
                             className="inline-flex items-center gap-1 px-2.5 py-1 border border-[#1E5FA8] text-[#1E5FA8] hover:bg-[#1E5FA8] hover:text-white rounded text-[11px] font-bold transition-colors"
                           >
                             <span className="material-symbols-outlined text-[13px]" aria-hidden="true">edit</span>
-                            Edit Role
+                            Edit Identity
                           </button>
                         )}
                       </td>
@@ -214,12 +295,43 @@ export default function IdentityTable({ refreshTrigger = 0, onRegisterClick }) {
             </table>
           </div>
         )}
+
+        {/* Pagination */}
+        {!loading && total > 0 && (
+          <div className="flex items-center justify-between mt-4 pt-3 border-t border-slate-200">
+            <div className="text-[11px] text-slate-500">
+              Showing {(pagination.page - 1) * pagination.limit + 1}-{Math.min(pagination.page * pagination.limit, total)} of {total}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPagination((prev) => ({ ...prev, page: Math.max(1, prev.page - 1) }))}
+                disabled={pagination.page === 1}
+                className="px-3 py-1.5 bg-[#1E5FA8] hover:bg-[#164a85] disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-lg transition-colors"
+              >
+                Previous
+              </button>
+              <span className="px-2 text-[11px] text-slate-500">
+                Page {pagination.page} of {totalPages}
+              </span>
+              <button
+                type="button"
+                onClick={() => setPagination((prev) => ({ ...prev, page: Math.min(totalPages, prev.page + 1) }))}
+                disabled={pagination.page >= totalPages}
+                className="px-3 py-1.5 bg-[#1E5FA8] hover:bg-[#164a85] disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-lg transition-colors"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
       </CardContent>
 
-      {/* Edit Role Modal - Portal Mount */}
+      {/* Edit Identity Modal - Portal Mount */}
       {editModal.open && (
         <EditRoleDialog
           identity={editModal.identity}
+          candidateManagers={managerCandidates.filter((u) => u.id !== editModal.identity?.id)}
           saving={saving}
           onChange={(changes) => setEditModal(prev => ({ ...prev, identity: { ...prev.identity, ...changes } }))}
           onSave={handleEditSave}
@@ -230,7 +342,7 @@ export default function IdentityTable({ refreshTrigger = 0, onRegisterClick }) {
   );
 }
 
-function EditRoleDialog({ identity, saving, onChange, onSave, onClose }) {
+function EditRoleDialog({ identity, candidateManagers, saving, onChange, onSave, onClose }) {
   const dialogRef = useModalA11y(onClose);
 
   // Lock page scrolling while the dialog is mounted
@@ -248,13 +360,13 @@ function EditRoleDialog({ identity, saving, onChange, onSave, onClose }) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="edit-role-title"
-        className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-sm flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        className="bg-white border border-slate-200 rounded-xl shadow-2xl w-full max-w-sm max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150"
       >
         {/* Modal Header */}
         <div className="flex items-center justify-between p-3.5 border-b border-slate-200 bg-white shrink-0">
           <div className="flex items-center gap-2">
             <span className="material-symbols-outlined text-[#D4AF37] text-xl" aria-hidden="true">admin_panel_settings</span>
-            <h2 id="edit-role-title" className="text-sm font-black text-[#0A1F3D]">Modify Identity Clearance</h2>
+            <h2 id="edit-role-title" className="text-sm font-black text-[#0A1F3D]">Modify Identity</h2>
           </div>
           <button
             type="button"
@@ -267,7 +379,7 @@ function EditRoleDialog({ identity, saving, onChange, onSave, onClose }) {
         </div>
 
         {/* Modal Body */}
-        <div className="p-4 space-y-3 text-slate-800">
+        <div className="p-4 space-y-3 text-slate-800 overflow-y-auto">
           <div className="p-2.5 rounded-lg bg-[#0A1F3D] border border-[#1F293D]">
             <div className="flex items-center gap-2.5">
               <span className="material-symbols-outlined text-[#D4AF37] text-xl" aria-hidden="true">badge</span>
@@ -309,6 +421,40 @@ function EditRoleDialog({ identity, saving, onChange, onSave, onClose }) {
               <option value={3}>Tier 3 — Secret</option>
               <option value={4}>Tier 4 — Top Secret</option>
             </select>
+          </div>
+
+          {/* Org-structure layer: who this identity reports to, and their
+              grade. Independent of role/clearance above — see schema.prisma
+              for why these are kept separate from RBAC and classification. */}
+          <div>
+            <label htmlFor="edit-grade" className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider mb-1">Grade</label>
+            <select
+              id="edit-grade"
+              value={identity?.seniorityGrade || ''}
+              onChange={(e) => onChange({ seniorityGrade: e.target.value ? parseInt(e.target.value, 10) : null })}
+              className="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-xs text-slate-900 focus:border-[#1E5FA8] outline-none"
+            >
+              <option value="">Not set</option>
+              {GRADE_OPTIONS.map((g) => (
+                <option key={g.value} value={g.value}>{g.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label htmlFor="edit-manager" className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider mb-1">Reports To</label>
+            <select
+              id="edit-manager"
+              value={identity?.managerId || ''}
+              onChange={(e) => onChange({ managerId: e.target.value || null })}
+              className="w-full bg-slate-50 border border-slate-300 rounded-md px-3 py-2 text-xs text-slate-900 focus:border-[#1E5FA8] outline-none"
+            >
+              <option value="">No manager assigned</option>
+              {candidateManagers?.map((m) => (
+                <option key={m.id} value={m.id}>{m.displayName || m.walletAddress} — {gradeLabel(m.seniorityGrade)}</option>
+              ))}
+            </select>
+            <p className="text-[10px] text-slate-400 mt-1">A manager's grade must be at or above this identity's grade.</p>
           </div>
         </div>
 

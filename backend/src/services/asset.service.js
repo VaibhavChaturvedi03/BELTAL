@@ -205,10 +205,26 @@ export const assetService = {
             sbu: true,
           },
         },
+        // The one PENDING request (there can only be one — requestTransfer
+        // refuses a second) so the UI can show "transfer pending" instead of
+        // a fabricated status, and disable requesting another one.
+        transferRequests: {
+          where: { status: 'PENDING' },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+          select: {
+            id: true,
+            createdAt: true,
+            toUser: { select: { id: true, displayName: true } },
+          },
+        },
       },
     });
 
-    return assets;
+    return assets.map(({ transferRequests, ...asset }) => ({
+      ...asset,
+      pendingTransfer: transferRequests[0] || null,
+    }));
   },
 
   /**
