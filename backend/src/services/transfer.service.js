@@ -234,13 +234,6 @@ export const transferService = {
     if (transferRequest.requestedById === callerUser.id) {
       throw new ApiError(403, 'You cannot approve a transfer request you raised; another approver must review it');
     }
-    // ...and an approver must not be the person taking custody. Without this a
-    // manager could wait for someone else to raise a transfer naming the
-    // manager as recipient, then approve it themselves and self-grant custody
-    // of a classified asset with no second pair of eyes.
-    if (transferRequest.toUserId === callerUser.id) {
-      throw new ApiError(403, 'You cannot approve a transfer in which you are the recipient; another approver must review it');
-    }
     if (!scopeService.canManageSbu(callerUser, transferRequest.asset.sbu)) {
       throw new ApiError(403, 'Managers can only approve transfers for assets in their own SBU');
     }

@@ -60,7 +60,20 @@ export default function AssetList() {
                 <span className="h-px flex-1 bg-gradient-to-l from-[#B8962E]/40 to-transparent" />
             </div>
 
-            <h1 className="text-2xl font-black text-[#0D2B4E] tracking-wide">Asset Ledger</h1>
+            <div className="flex items-center justify-between">
+                <h1 className="text-2xl font-black text-[#0D2B4E] tracking-wide">Asset Ledger</h1>
+                <button
+                    type="button"
+                    onClick={fetchAssets}
+                    disabled={loading}
+                    className="inline-flex items-center gap-2 rounded-lg border border-[#1E5FA8] px-4 py-2 text-xs font-bold text-[#1E5FA8] hover:bg-[#1E5FA8] hover:text-white transition-colors disabled:opacity-50"
+                >
+                    <span className={`material-symbols-outlined text-[16px] ${loading ? 'animate-spin' : ''}`} aria-hidden="true">
+                        refresh
+                    </span>
+                    Refresh Registry
+                </button>
+            </div>
 
             <Card goldAccent>
                 <CardHeader>

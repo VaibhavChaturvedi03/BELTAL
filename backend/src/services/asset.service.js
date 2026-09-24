@@ -117,44 +117,54 @@ export const assetService = {
     const resolvedTokenId = chainResult.confirmed
       ? (chainResult.tokenId ? String(chainResult.tokenId) : null)
       : input.tokenId || null;
-    if (resolvedTokenId) {
+
+    if (!chainResult.confirmed && resolvedTokenId) {
       const clash = await prisma.asset.findUnique({ where: { tokenId: resolvedTokenId }, select: { id: true } });
       if (clash) {
-        throw new ApiError(
-          409,
-          chainResult.confirmed
-            ? `Token ${resolvedTokenId} was minted on-chain (tx ${chainResult.txHash}) but a cached asset with that token ID already exists — reconcile manually`
-            : `An asset with token ID ${resolvedTokenId} already exists`
-        );
+        throw new ApiError(409, `An asset with token ID ${resolvedTokenId} already exists`);
       }
     }
 
-    // 5. Persist Asset in PostgreSQL Cache
-    const asset = await prisma.asset.create({
-      data: {
-        name: input.name,
-        tokenId: resolvedTokenId,
-        cid,
-        classificationTier: input.classificationTier,
-        sbu: input.sbu,
-        metadata: input.metadata || {},
-        mintTxHash: chainResult.txHash,
-        ownerId: custodian.id,
-      },
-      include: {
-        owner: {
-          select: {
-            id: true,
-            displayName: true,
-            externalId: true,
-            walletAddress: true,
-            role: true,
-            clearanceLevel: true,
-            sbu: true,
-          },
+    // 5. Persist Asset in PostgreSQL Cache (upsert for on-chain minted assets to guarantee idempotency)
+    const assetPayload = {
+      name: input.name,
+      tokenId: resolvedTokenId,
+      cid,
+      classificationTier: input.classificationTier,
+      sbu: input.sbu,
+      metadata: input.metadata || {},
+      mintTxHash: chainResult.txHash,
+      ownerId: custodian.id,
+    };
+
+    const assetInclude = {
+      owner: {
+        select: {
+          id: true,
+          displayName: true,
+          externalId: true,
+          walletAddress: true,
+          role: true,
+          clearanceLevel: true,
+          sbu: true,
         },
       },
-    });
+    };
+
+    let asset;
+    if (resolvedTokenId) {
+      asset = await prisma.asset.upsert({
+        where: { tokenId: resolvedTokenId },
+        update: assetPayload,
+        create: assetPayload,
+        include: assetInclude,
+      });
+    } else {
+      asset = await prisma.asset.create({
+        data: assetPayload,
+        include: assetInclude,
+      });
+    }
 
     // 6. Log Immutable Audit Trail Event
     await auditService
@@ -379,7 +389,7 @@ export const assetService = {
         where,
         skip,
         take: limit,
-        orderBy: { createdAt: 'desc' },
+        orderBy: { updatedAt: 'desc' },
         include: {
           owner: {
             select: {
