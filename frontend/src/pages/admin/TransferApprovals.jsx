@@ -181,8 +181,9 @@ export default function TransferApprovals() {
                                                 </td>
                                                 <td className="px-4 py-3">
                                                     {user?.id && (transfer.requestedById ?? transfer.requestedBy?.id) === user.id ? (
-                                                        // Separation of duties: the backend refuses (403) approval or rejection by the requester
-                                                        <span className="text-xs text-slate-400 italic">Awaiting another approver</span>
+                                                        <span className="inline-block rounded bg-amber-500/10 border border-amber-500/20 px-2.5 py-1 text-[11px] font-bold text-amber-400 italic">
+                                                            Requester cannot self-approve (Requires approver review)
+                                                        </span>
                                                     ) : (
                                                     <div className="flex gap-2">
                                                         <button
