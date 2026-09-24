@@ -7,8 +7,13 @@ import { userApi } from '../services/api';
  * The admin identity listing is ADMIN-only, so managers read their team from
  * the transfer-recipients directory (available to every signed-in role) and
  * narrow it to their own SBU here.
+ *
+ * `custodyOnly` (the InitiateTransfer recipient picker) excludes AUDITOR —
+ * read-only identities that were never meant to hold asset custody. The
+ * plain team roster (TeamMembers) leaves it off so auditors still show up
+ * for org visibility.
  */
-export default function useTeamMembers(sbu) {
+export default function useTeamMembers(sbu, custodyOnly = false) {
   const [members, setMembers] = useState([]);
   const [loading, setLoading] = useState(Boolean(sbu));
   const [error, setError] = useState(null);
@@ -22,7 +27,7 @@ export default function useTeamMembers(sbu) {
     setLoading(true);
     setError(null);
     try {
-      const data = await userApi.listTransferRecipients({ limit: 100 });
+      const data = await userApi.listTransferRecipients({ limit: 100, ...(custodyOnly ? { custodyOnly: true } : {}) });
       setMembers((data?.users || []).filter((member) => member.sbu === sbu));
     } catch (err) {
       console.error('Failed to fetch team members', err);
@@ -31,7 +36,7 @@ export default function useTeamMembers(sbu) {
     } finally {
       setLoading(false);
     }
-  }, [sbu]);
+  }, [sbu, custodyOnly]);
 
   useEffect(() => {
     reload();

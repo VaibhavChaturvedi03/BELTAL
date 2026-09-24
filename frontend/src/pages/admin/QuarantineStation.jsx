@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { adminApi } from '../../services/api';
 import { useToast } from '../../components/ui/Toast';
 import { useAuth } from '../../context/AuthContext';
@@ -48,25 +48,54 @@ export default function QuarantineStation() {
     const toast = useToast();
     const { user: me } = useAuth();
     const [identities, setIdentities] = useState([]);
+    const [total, setTotal] = useState(0);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const [search, setSearch] = useState('');
     const [tab, setTab] = useState('ALL');
+    const [pagination, setPagination] = useState({ page: 1, limit: 20 });
     const [dialog, setDialog] = useState(null); // { mode: 'revoke' | 'reinstate', identity }
     const [reason, setReason] = useState('');
     const [confirmText, setConfirmText] = useState('');
     const [busy, setBusy] = useState(false);
 
+    // Summary tiles reflect the whole registry, not whatever tab/search the
+    // table happens to be filtered to right now.
+    const [counts, setCounts] = useState({ total: 0, active: 0, revoked: 0 });
+    const [countsLoading, setCountsLoading] = useState(true);
+
     const fetchIdentities = useCallback(async () => {
         setLoading(true);
         setError(null);
         try {
-            const data = await adminApi.listIdentities({ limit: 100 });
+            const data = await adminApi.listIdentities({
+                search: search || undefined,
+                status: tab === 'ALL' ? undefined : tab,
+                page: pagination.page,
+                limit: pagination.limit,
+            });
             setIdentities(data.users || []);
+            setTotal(data.total ?? 0);
         } catch (err) {
             setError(err.uiMessage || 'The identity registry could not be loaded.');
         } finally {
             setLoading(false);
+        }
+    }, [search, tab, pagination.page, pagination.limit]);
+
+    const fetchCounts = useCallback(async () => {
+        setCountsLoading(true);
+        try {
+            const [all, active, revoked] = await Promise.all([
+                adminApi.listIdentities({ limit: 1 }),
+                adminApi.listIdentities({ limit: 1, status: 'ACTIVE' }),
+                adminApi.listIdentities({ limit: 1, status: 'REVOKED' }),
+            ]);
+            setCounts({ total: all.total ?? 0, active: active.total ?? 0, revoked: revoked.total ?? 0 });
+        } catch (err) {
+            console.error('Failed to fetch identity counts', err);
+        } finally {
+            setCountsLoading(false);
         }
     }, []);
 
@@ -74,21 +103,26 @@ export default function QuarantineStation() {
         fetchIdentities();
     }, [fetchIdentities]);
 
-    const counts = useMemo(() => {
-        const revoked = identities.filter((u) => u.revokedAt).length;
-        return { total: identities.length, revoked, active: identities.length - revoked };
-    }, [identities]);
+    useEffect(() => {
+        fetchCounts();
+    }, [fetchCounts]);
 
-    const visible = useMemo(() => {
-        const term = search.trim().toLowerCase();
-        return identities.filter((u) => {
-            if (tab === 'ACTIVE' && u.revokedAt) return false;
-            if (tab === 'REVOKED' && !u.revokedAt) return false;
-            if (!term) return true;
-            return [u.displayName, u.walletAddress, u.externalId, u.did]
-                .some((value) => (value || '').toLowerCase().includes(term));
-        });
-    }, [identities, search, tab]);
+    const refreshAll = useCallback(() => {
+        fetchIdentities();
+        fetchCounts();
+    }, [fetchIdentities, fetchCounts]);
+
+    const totalPages = Math.max(1, Math.ceil(total / pagination.limit));
+
+    const updateSearch = (value) => {
+        setSearch(value);
+        setPagination((prev) => ({ ...prev, page: 1 }));
+    };
+
+    const updateTab = (value) => {
+        setTab(value);
+        setPagination((prev) => ({ ...prev, page: 1 }));
+    };
 
     const openDialog = (mode, identity) => {
         setReason('');
@@ -113,7 +147,7 @@ export default function QuarantineStation() {
                 reportOutcome(toast, 'reinstated', name, result);
             }
             setDialog(null);
-            fetchIdentities();
+            refreshAll();
         } catch (err) {
             toast.error(err.uiMessage || `Could not ${mode} this identity`);
         } finally {
@@ -139,7 +173,7 @@ export default function QuarantineStation() {
                 </div>
                 <button
                     type="button"
-                    onClick={fetchIdentities}
+                    onClick={refreshAll}
                     disabled={loading}
                     className="inline-flex items-center gap-2 rounded-lg border border-[#1E5FA8] px-4 py-2 text-xs font-bold text-[#1E5FA8] hover:bg-[#1E5FA8] hover:text-white transition-colors disabled:opacity-50"
                 >
@@ -149,9 +183,9 @@ export default function QuarantineStation() {
             </div>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <SummaryTile icon="groups" label="Identities" value={counts.total} tone="text-[#1E5FA8] bg-[#1E5FA8]/10" loading={loading} />
-                <SummaryTile icon="verified_user" label="Active" value={counts.active} tone="text-emerald-700 bg-emerald-100" loading={loading} />
-                <SummaryTile icon="gpp_bad" label="Quarantined" value={counts.revoked} tone="text-red-700 bg-red-100" loading={loading} />
+                <SummaryTile icon="groups" label="Identities" value={counts.total} tone="text-[#1E5FA8] bg-[#1E5FA8]/10" loading={countsLoading} />
+                <SummaryTile icon="verified_user" label="Active" value={counts.active} tone="text-emerald-700 bg-emerald-100" loading={countsLoading} />
+                <SummaryTile icon="gpp_bad" label="Quarantined" value={counts.revoked} tone="text-red-700 bg-red-100" loading={countsLoading} />
             </div>
 
             <section className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
@@ -163,7 +197,7 @@ export default function QuarantineStation() {
                                 type="button"
                                 role="tab"
                                 aria-selected={tab === value}
-                                onClick={() => setTab(value)}
+                                onClick={() => updateTab(value)}
                                 className={`rounded-md px-3 py-1.5 text-xs font-bold transition-colors ${
                                     tab === value ? 'bg-[#0A1F3D] text-white shadow-sm' : 'text-slate-600 hover:text-[#0A1F3D]'
                                 }`}
@@ -177,7 +211,7 @@ export default function QuarantineStation() {
                         aria-label="Search identities by name, employee code, DID or wallet"
                         placeholder="Search name, code, DID or wallet…"
                         value={search}
-                        onChange={(e) => setSearch(e.target.value)}
+                        onChange={(e) => updateSearch(e.target.value)}
                         className="w-full sm:w-80 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs text-[#0A1F3D] placeholder-slate-400 focus:border-[#1E5FA8] outline-none"
                     />
                 </div>
@@ -186,7 +220,7 @@ export default function QuarantineStation() {
                     <div className="m-4 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700" role="alert">
                         <p className="font-bold">Unable to load identities</p>
                         <p className="mt-0.5">{error}</p>
-                        <button type="button" onClick={fetchIdentities} className="mt-2 font-bold underline">Retry</button>
+                        <button type="button" onClick={refreshAll} className="mt-2 font-bold underline">Retry</button>
                     </div>
                 )}
 
@@ -212,7 +246,7 @@ export default function QuarantineStation() {
                                             ))}
                                         </tr>
                                     ))
-                                ) : visible.length === 0 ? (
+                                ) : identities.length === 0 ? (
                                     <tr>
                                         <td colSpan="6" className="px-4 py-14 text-center">
                                             <span className="material-symbols-outlined block text-[36px] text-slate-300 mb-2" aria-hidden="true">shield_person</span>
@@ -221,7 +255,7 @@ export default function QuarantineStation() {
                                         </td>
                                     </tr>
                                 ) : (
-                                    visible.map((identity) => (
+                                    identities.map((identity) => (
                                         <IdentityRow
                                             key={identity.id}
                                             identity={identity}
@@ -233,6 +267,35 @@ export default function QuarantineStation() {
                                 )}
                             </tbody>
                         </table>
+                    </div>
+                )}
+
+                {!error && !loading && total > 0 && (
+                    <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5 border-t border-slate-200">
+                        <div className="text-[11px] text-slate-500">
+                            Showing {(pagination.page - 1) * pagination.limit + 1}-{Math.min(pagination.page * pagination.limit, total)} of {total}
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setPagination((prev) => ({ ...prev, page: Math.max(1, prev.page - 1) }))}
+                                disabled={pagination.page === 1}
+                                className="px-3 py-1.5 bg-[#1E5FA8] hover:bg-[#164a85] disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-lg transition-colors"
+                            >
+                                Previous
+                            </button>
+                            <span className="px-2 text-[11px] text-slate-500">
+                                Page {pagination.page} of {totalPages}
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setPagination((prev) => ({ ...prev, page: Math.min(totalPages, prev.page + 1) }))}
+                                disabled={pagination.page >= totalPages}
+                                className="px-3 py-1.5 bg-[#1E5FA8] hover:bg-[#164a85] disabled:opacity-50 disabled:cursor-not-allowed text-white text-[11px] font-bold rounded-lg transition-colors"
+                            >
+                                Next
+                            </button>
+                        </div>
                     </div>
                 )}
             </section>

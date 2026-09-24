@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { assetApi } from '../../services/api';
 import Card, { CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
-import { TierBadge } from '../../components/ui/Badge';
+import { TierBadge, CustodyBadge } from '../../components/ui/Badge';
 
 export default function MyAssets() {
     const [allAssets, setAllAssets] = useState([]);
@@ -35,15 +35,6 @@ export default function MyAssets() {
             (asset.name || '').toLowerCase().includes(query) ||
             (asset.tokenId || '').toLowerCase().includes(query))
         : allAssets;
-
-    const getStatusColor = (status) => {
-        switch (status?.toUpperCase()) {
-            case 'ACTIVE': return 'bg-emerald-900/50 text-emerald-400 border-emerald-700';
-            case 'INACTIVE': return 'bg-slate-700/50 text-slate-400 border-slate-600';
-            case 'MAINTENANCE': return 'bg-amber-900/50 text-amber-400 border-amber-700';
-            default: return 'bg-slate-700/50 text-slate-400 border-slate-600';
-        }
-    };
 
     return (
         <div className="user-console min-h-full p-6 sm:p-8 space-y-6">
@@ -108,7 +99,8 @@ export default function MyAssets() {
                 </Card>
             ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {assets.map((asset) => (
+                    {assets.map((asset) => {
+                        return (
                         <Link
                             key={asset.id}
                             to={`/assets/${asset.id}`}
@@ -116,7 +108,7 @@ export default function MyAssets() {
                         >
                             <Card goldAccent={false} className="h-full hover:border-emerald-500/50 transition-all">
                                 <CardHeader>
-                                    <div className="flex items-start justify-between">
+                                    <div className="flex items-start justify-between gap-2">
                                         <div className="flex-1 min-w-0">
                                             <CardTitle className="text-sm font-bold text-white truncate">
                                                 {asset.name}
@@ -125,9 +117,7 @@ export default function MyAssets() {
                                                 ID: {asset.id?.slice(0, 8)}...
                                             </div>
                                         </div>
-                                        <span className={`ml-2 px-2 py-1 rounded border text-[10px] font-bold shrink-0 ${getStatusColor(asset.status)}`}>
-                                            {asset.status || 'ACTIVE'}
-                                        </span>
+                                        <CustodyBadge pending={Boolean(asset.pendingTransfer)} className="shrink-0" />
                                     </div>
                                 </CardHeader>
                                 <CardContent>
@@ -146,19 +136,28 @@ export default function MyAssets() {
                                                 {new Date(asset.createdAt).toLocaleDateString('en-IN')}
                                             </span>
                                         </div>
+                                        {asset.pendingTransfer && (
+                                            <div className="flex items-center justify-between text-xs">
+                                                <span className="text-slate-500">Pending to</span>
+                                                <span className="text-amber-700 font-medium truncate ml-2">
+                                                    {asset.pendingTransfer.toUser?.displayName || 'Unknown'}
+                                                </span>
+                                            </div>
+                                        )}
                                     </div>
                                     <div className="mt-4 pt-3 border-t border-[#1F293D] flex items-center justify-between">
-                                        <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider">
+                                        <span className="text-[10px] text-emerald-700 font-bold uppercase tracking-wider">
                                             View Details
                                         </span>
-                                        <span className="material-symbols-outlined text-emerald-400 text-[18px] group-hover:translate-x-1 transition-transform">
+                                        <span className="material-symbols-outlined text-emerald-700 text-[18px] group-hover:translate-x-1 transition-transform">
                                             arrow_forward
                                         </span>
                                     </div>
                                 </CardContent>
                             </Card>
                         </Link>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
 

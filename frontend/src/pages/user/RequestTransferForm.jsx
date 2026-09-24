@@ -38,7 +38,7 @@ export default function RequestTransferForm() {
     setLoadProblem('');
     const [assetsResult, recipientsResult] = await Promise.allSettled([
       assetApi.listMine(),
-      userApi.listTransferRecipients({ limit: 100 }),
+      userApi.listTransferRecipients({ limit: 100, custodyOnly: true }),
     ]);
 
     if (assetsResult.status === 'fulfilled') {
@@ -149,8 +149,8 @@ export default function RequestTransferForm() {
               >
                 <option value="">-- Select an Asset --</option>
                 {assets.map((asset) => (
-                  <option key={asset.id} value={asset.id}>
-                    {asset.name} (Tier {asset.classificationTier}) - {asset.status || 'ACTIVE'}
+                  <option key={asset.id} value={asset.id} disabled={Boolean(asset.pendingTransfer)}>
+                    {asset.name} (Tier {asset.classificationTier}){asset.pendingTransfer ? ' - Transfer pending' : ''}
                   </option>
                 ))}
               </select>
@@ -182,14 +182,27 @@ export default function RequestTransferForm() {
                     <span className="text-white ml-2 font-medium">Tier {selectedAsset.classificationTier}</span>
                   </div>
                   <div>
-                    <span className="text-slate-500">Status:</span>
-                    <span className="text-emerald-400 ml-2 font-medium">{selectedAsset.status || 'ACTIVE'}</span>
+                    <span className="text-slate-500">Custody status:</span>
+                    <span className={`ml-2 font-medium ${selectedAsset.pendingTransfer ? 'text-amber-400' : 'text-emerald-400'}`}>
+                      {selectedAsset.pendingTransfer ? 'Transfer pending' : 'In your custody'}
+                    </span>
                   </div>
                   <div>
-                    <span className="text-slate-500">Type:</span>
-                    <span className="text-white ml-2 font-medium">{selectedAsset.assetType || 'N/A'}</span>
+                    <span className="text-slate-500">SBU:</span>
+                    <span className="text-white ml-2 font-medium">{selectedAsset.sbu?.replace('SBU_', '') || 'N/A'}</span>
                   </div>
                 </div>
+                {selectedAsset.pendingTransfer && (
+                  <div className="mt-3 p-3 rounded bg-amber-900/30 border border-amber-600/50">
+                    <p className="text-amber-400 text-xs font-bold flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[14px]">warning</span>
+                      Transfer already pending
+                    </p>
+                    <p className="text-amber-300/80 text-xs mt-1">
+                      This asset already has a transfer request awaiting approval. Choose a different asset, or wait for that request to be resolved.
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
@@ -312,8 +325,8 @@ export default function RequestTransferForm() {
               </button>
               <button
                 type="submit"
-                disabled={submitting || !formData.assetId || !formData.toUserId}
-                title={!formData.assetId || !formData.toUserId ? 'Select an asset and recipient to submit this request' : 'Submit transfer request'}
+                disabled={submitting || !formData.assetId || !formData.toUserId || Boolean(selectedAsset?.pendingTransfer)}
+                title={selectedAsset?.pendingTransfer ? 'This asset already has a pending transfer request' : (!formData.assetId || !formData.toUserId ? 'Select an asset and recipient to submit this request' : 'Submit transfer request')}
                 className="flex-1 px-4 py-3 rounded-xl bg-[#1E5FA8] hover:bg-[#164a85] disabled:bg-[#D9E8F7] disabled:text-[#58718B] disabled:border disabled:border-[#B9DCEF] disabled:cursor-not-allowed disabled:opacity-100 text-white font-black uppercase tracking-widest shadow-[0_7px_16px_rgba(30,95,168,0.20)] disabled:shadow-none transition-all flex items-center justify-center gap-2"
               >
                 {submitting && (

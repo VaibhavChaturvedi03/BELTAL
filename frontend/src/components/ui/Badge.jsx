@@ -1,12 +1,17 @@
 /**
  * Badge — colour-coded labels for roles, classification tiers and clearance levels
  *
- * Exports: RoleBadge, TierBadge, ClearanceBadge
+ * Exports: RoleBadge, TierBadge, ClearanceBadge, CustodyBadge
  *
  * Roles use categorical hues (each role is its own colour, plus an icon).
  * Tiers and clearance levels share one green → yellow → orange → red scale, so a
  * higher number always reads as "more sensitive". The tier badge also draws
  * 1–4 signal bars, so it never relies on colour alone.
+ *
+ * All tones are light-mode pastels (`-100` background / `-800` text / `-300`
+ * border) so they read correctly on the light `Card` background — never the
+ * `-900/50` + `-400` dark-card tones that used to be scattered across
+ * individual pages.
  *
  * Class names are written out in full (never concatenated) so Tailwind can see them.
  */
@@ -103,6 +108,29 @@ export function ClearanceBadge({ level: value, className = '' }) {
         verified_user
       </span>
       Level {level}
+    </span>
+  )
+}
+
+/**
+ * CustodyBadge — whether an asset currently has an outstanding (PENDING)
+ * transfer request against it. Custody status is never a stored field (see
+ * asset.service.js `getMyAssets`/`getAssetById`) — it's always derived from
+ * the asset's transfer requests, so every caller passes a plain boolean.
+ */
+export function CustodyBadge({ pending, className = '' }) {
+  const tone = pending
+    ? 'bg-amber-100 text-amber-800 border-amber-300'
+    : 'bg-green-100 text-green-800 border-green-300'
+  return (
+    <span
+      className={`${BASE} ${tone} ${className}`}
+      title={pending ? 'A transfer request is pending on this asset' : 'Asset is in active, uncontested custody'}
+    >
+      <span className="material-symbols-outlined text-[13px]" aria-hidden="true">
+        {pending ? 'hourglass_top' : 'verified'}
+      </span>
+      {pending ? 'Transfer Pending' : 'In Custody'}
     </span>
   )
 }

@@ -240,6 +240,9 @@ export const GROUPS = [
       "role": "MANAGER",
       "clearanceLevel": 3,
       "sbu": "SBU_RADAR",
+      "seniorityGrade": 5,
+      "managerId": "b2c3...",
+      "manager": { "id": "b2c3...", "displayName": "R. Iyer" },
       "revokedAt": null,
       "revocationReason": null,
       "revokeTxHash": null,
@@ -307,6 +310,30 @@ export const GROUPS = [
         ],
       },
       {
+        method: 'PATCH', path: '/admin/identities/:id/manager', auth: 'ADMIN',
+        summary:
+          'Set who this identity reports to and/or their organizational grade (1-9, an approximation of BEL\'s E1-E9 executive ladder). Independent of role/clearance and off-chain only — no chain call. managerId: null clears the assignment. A manager\'s grade must be at or above the report\'s, and the assignment is refused if it would create a reporting cycle.',
+        request: `{
+  "managerId": "b2c3...",
+  "seniorityGrade": 3
+}`,
+        response: `{
+  "success": true,
+  "data": {
+    "id": "8f14e45f-...",
+    "managerId": "b2c3...",
+    "manager": { "id": "b2c3...", "displayName": "R. Iyer", "seniorityGrade": 5 },
+    "seniorityGrade": 3
+  }
+}`,
+        errors: [
+          '400: provide at least one of managerId or seniorityGrade',
+          '400: a person cannot be their own manager, or the assignment would create a reporting cycle, or the manager\'s grade is below the report\'s',
+          '404: identity or manager not found',
+          '409: the identity or the proposed manager is revoked',
+        ],
+      },
+      {
         method: 'POST', path: '/admin/identities/:id/revoke', auth: 'ADMIN',
         summary:
           'Quarantine an identity. The DID is deactivated in the IdentityRegistry and the wallet loses its role in AccessControl, both on-chain. The person is rejected on their next request and cannot sign in until reinstated. Assets they hold stay where they are and need a transfer.',
@@ -337,7 +364,7 @@ export const GROUPS = [
       {
         method: 'POST', path: '/admin/identities/:id/reinstate', auth: 'ADMIN',
         summary:
-          'Lift a quarantine. The registry has no undo, so this registers the same wallet again with the same DID, identity hash, clearance and SBU, then grants the role back.',
+          'Lift a quarantine, OR repair an identity that\'s active in the database but was never actually confirmed on-chain (IdentityRegistry has no active entry for it — this is the "Identity not active" revert that PATCH .../role can surface). Either way this is the same fix: the registry has no undo, so it registers the same wallet again with the same DID, identity hash, clearance and SBU, then grants the role back. Does not require the identity to be revoked first — re-registering one that\'s already active on-chain is a safe no-op.',
         request: null,
         response: `{
   "success": true,
@@ -347,7 +374,7 @@ export const GROUPS = [
     "chain": { "confirmed": true, "txHash": "0x2e90...", "roleGranted": true, "roleTxHash": "0x51d3..." }
   }
 }`,
-        errors: ['404: identity not found', '409: this identity is not revoked', '502: the on-chain reinstatement failed; nothing was changed'],
+        errors: ['404: identity not found', '502: the on-chain reinstatement failed; nothing was changed'],
       },
       {
         method: 'POST', path: '/admin/identities/bulk-import/validate', auth: 'ADMIN',
@@ -429,6 +456,7 @@ or, as JSON:
     "id": "8f14e45f-...", "walletAddress": "0x1234...7890", "externalId": "BEL-EMP-1042",
     "did": "did:beltal:BEL-EMP-1042", "displayName": "A. Sharma",
     "role": "MANAGER", "clearanceLevel": 3, "sbu": "SBU_RADAR",
+    "seniorityGrade": 5, "manager": { "id": "b2c3...", "displayName": "R. Iyer", "seniorityGrade": 7 },
     "createdAt": "2026-09-01T09:00:00.000Z"
   }
 }`,
@@ -437,11 +465,11 @@ or, as JSON:
       {
         method: 'GET', path: '/users/transfer-recipients', auth: 'Any authenticated role',
         summary:
-          'Candidate custody recipients, scoped to what the caller may see. Administrators and auditors see everyone; users and managers see their own SBU plus anyone holding an active cross-SBU pass. Wallet address and role are returned only to oversight roles.',
-        request: `?limit=100`,
+          'Candidate custody recipients, scoped to what the caller may see. Administrators and auditors see everyone; users and managers see their own SBU plus anyone holding an active cross-SBU pass. Wallet address, role, seniorityGrade, managerId and manager are returned only to oversight roles (ADMIN/MANAGER/AUDITOR) — this is also the manager team-roster directory. SYSTEM_CONNECTOR is always excluded; add custodyOnly=true (used by the asset-transfer recipient picker) to exclude AUDITOR too, since auditors are read-only and cannot hold asset custody.',
+        request: `?limit=100&custodyOnly=true`,
         response: `{
   "success": true,
-  "data": { "users": [{ "id": "b2c3...", "displayName": "R. Iyer", "did": "did:beltal:BEL-EMP-2210", "clearanceLevel": 2, "sbu": "SBU_RADAR" }] }
+  "data": { "users": [{ "id": "b2c3...", "displayName": "R. Iyer", "did": "did:beltal:BEL-EMP-2210", "clearanceLevel": 2, "sbu": "SBU_RADAR", "seniorityGrade": 5, "managerId": "c4d5...", "manager": { "id": "c4d5...", "displayName": "K. Rao" } }] }
 }`,
         errors: [],
       },
@@ -491,9 +519,9 @@ or, as JSON:
       },
       {
         method: 'GET', path: '/assets/me', auth: 'Any authenticated role',
-        summary: 'Assets currently in the caller\'s custody. Also available as /assets/my.',
+        summary: 'Assets currently in the caller\'s custody. Also available as /assets/my. Each asset carries pendingTransfer (the one PENDING request against it, or null) so the UI can show real transfer status instead of guessing.',
         request: null,
-        response: `{ "success": true, "data": [ { "id": "0b3d...", "name": "AESA Radar Module X7", "tokenId": "142" } ] }`,
+        response: `{ "success": true, "data": [ { "id": "0b3d...", "name": "AESA Radar Module X7", "tokenId": "142", "pendingTransfer": { "id": "a1b2...", "toUser": { "id": "8f14...", "displayName": "R. Iyer" }, "createdAt": "2026-09-20T10:00:00.000Z" } } ] }`,
         errors: [],
       },
       {
@@ -687,6 +715,22 @@ or, as JSON:
         request: `?from=2026-09-01&to=2026-09-21`,
         response: `{ "success": true, "data": { "identityCreated": 42, "roleChanged": 7, "assetMinted": 130, "transferExecuted": 58, "total": 237 } }`,
         errors: [],
+      },
+      {
+        method: 'GET', path: '/audit/:id', auth: 'ADMIN, AUDITOR',
+        summary:
+          'Fetch a single audit event by its id — a fresh read, not dependent on any filter/page of the list. Used to build a shareable deep link to one event (the Audit Trail Explorer\'s event detail view supports "?event=<id>" in its URL).',
+        request: null,
+        response: `{
+  "success": true,
+  "data": {
+    "id": "c1d2...", "source": "AUDIT_EVENT", "type": "ASSET_MINTED",
+    "actor": { "id": "8f14e45f-...", "displayName": "A. Sharma", "role": "MANAGER" },
+    "targetId": "0b3d1c2e-...", "txHash": "0x9f8e...", "blockNumber": "7231045",
+    "payload": { }, "timestamp": "2026-09-01T09:00:00.000Z"
+  }
+}`,
+        errors: ['404: audit event not found'],
       },
       {
         method: 'GET', path: '/audit/verify/:id', auth: 'ADMIN, AUDITOR',

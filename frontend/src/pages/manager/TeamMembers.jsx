@@ -3,20 +3,36 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import useTeamMembers from '../../hooks/useTeamMembers';
 import { RoleBadge, ClearanceBadge } from '../../components/ui/Badge';
+import { gradeLabel } from '../../config/grades';
 
 const shortWallet = (address = '') => (address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-4)}` : address);
+
+const PAGE_SIZE = 15;
 
 export default function TeamMembers() {
     const { user } = useAuth();
     const { members, loading, error, reload } = useTeamMembers(user?.sbu);
     const [search, setSearch] = useState('');
+    const [page, setPage] = useState(1);
 
     const query = search.trim().toLowerCase();
-    const visibleMembers = query
+    const filteredMembers = query
         ? members.filter((member) =>
             (member.displayName || '').toLowerCase().includes(query) ||
             (member.walletAddress || '').toLowerCase().includes(query))
         : members;
+
+    // The API caps this list at 100 rows and has no server-side page/total
+    // support (not worth adding for an SBU roster this small), so pagination
+    // here just slices the already-fetched, already-filtered array.
+    const totalPages = Math.max(1, Math.ceil(filteredMembers.length / PAGE_SIZE));
+    const currentPage = Math.min(page, totalPages);
+    const visibleMembers = filteredMembers.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+    const handleSearchChange = (value) => {
+        setSearch(value);
+        setPage(1);
+    };
 
     return (
         <div className="min-h-full p-6 sm:p-8 space-y-6 bg-slate-100/60">
@@ -37,7 +53,7 @@ export default function TeamMembers() {
                     <h2 className="text-base font-black uppercase tracking-wider text-[#0A1F3D]">Team Personnel Registry</h2>
                     {!loading && !error && (
                         <span className="shrink-0 rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[11px] font-bold text-slate-600">
-                            {visibleMembers.length} {visibleMembers.length === 1 ? 'member' : 'members'}
+                            {filteredMembers.length} {filteredMembers.length === 1 ? 'member' : 'members'}
                         </span>
                     )}
                 </div>
@@ -56,7 +72,7 @@ export default function TeamMembers() {
                             aria-label="Search team members"
                             placeholder="Search by name or wallet…"
                             value={search}
-                            onChange={(e) => setSearch(e.target.value)}
+                            onChange={(e) => handleSearchChange(e.target.value)}
                             className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-9 pr-3 py-2 text-sm text-[#0A1F3D] placeholder-slate-400 focus:border-[#1E5FA8] focus:ring-1 focus:ring-[#1E5FA8] outline-none"
                         />
                     </div>
@@ -78,6 +94,7 @@ export default function TeamMembers() {
                                         <th className="px-4 py-3 font-bold">DID / Wallet</th>
                                         <th className="px-4 py-3 font-bold">Role</th>
                                         <th className="px-4 py-3 font-bold">Clearance</th>
+                                        <th className="px-4 py-3 font-bold">Grade / Reports To</th>
                                         <th className="px-4 py-3 font-bold text-right">Actions</th>
                                     </tr>
                                 </thead>
@@ -85,7 +102,7 @@ export default function TeamMembers() {
                                     {loading ? (
                                         Array.from({ length: 4 }).map((_, i) => (
                                             <tr key={i}>
-                                                {Array.from({ length: 5 }).map((__, j) => (
+                                                {Array.from({ length: 6 }).map((__, j) => (
                                                     <td key={j} className="px-4 py-4">
                                                         <div className="h-3 w-3/4 rounded bg-slate-200 animate-pulse" />
                                                     </td>
@@ -94,7 +111,7 @@ export default function TeamMembers() {
                                         ))
                                     ) : visibleMembers.length === 0 ? (
                                         <tr>
-                                            <td colSpan="5" className="px-4 py-12 text-center">
+                                            <td colSpan="6" className="px-4 py-12 text-center">
                                                 <span className="material-symbols-outlined block text-[36px] text-slate-300 mb-2" aria-hidden="true">
                                                     groups
                                                 </span>
@@ -123,6 +140,12 @@ export default function TeamMembers() {
                                                 <td className="px-4 py-3">
                                                     <ClearanceBadge level={member.clearanceLevel} />
                                                 </td>
+                                                <td className="px-4 py-3 text-xs text-slate-600">
+                                                    <div>{gradeLabel(member.seniorityGrade)}</div>
+                                                    <div className="text-slate-400">
+                                                        {member.manager?.displayName ? `→ ${member.manager.displayName}` : 'No manager assigned'}
+                                                    </div>
+                                                </td>
                                                 <td className="px-4 py-3 text-right">
                                                     <Link
                                                         to={`/team-assets?holder=${member.id}`}
@@ -143,6 +166,35 @@ export default function TeamMembers() {
                                     )}
                                 </tbody>
                             </table>
+                        </div>
+                    )}
+
+                    {!loading && !error && totalPages > 1 && (
+                        <div className="flex items-center justify-between pt-2">
+                            <div className="text-xs text-slate-500">
+                                Showing {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filteredMembers.length)} of {filteredMembers.length}
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <button
+                                    type="button"
+                                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                                    disabled={currentPage === 1}
+                                    className="px-3 py-1.5 bg-[#1E5FA8] hover:bg-[#164a85] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded transition-colors"
+                                >
+                                    Previous
+                                </button>
+                                <span className="px-3 py-1.5 text-xs text-slate-500">
+                                    Page {currentPage} of {totalPages}
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                                    disabled={currentPage === totalPages}
+                                    className="px-3 py-1.5 bg-[#1E5FA8] hover:bg-[#164a85] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-bold rounded transition-colors"
+                                >
+                                    Next
+                                </button>
+                            </div>
                         </div>
                     )}
                 </div>

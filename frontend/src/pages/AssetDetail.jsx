@@ -2,7 +2,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import useAssetDetail from '../hooks/useAssetDetail';
 import { useAuth } from '../context/AuthContext';
 import Card, { CardContent, CardHeader, CardTitle } from '../components/ui/Card';
-import { TierBadge } from '../components/ui/Badge';
+import { TierBadge, CustodyBadge } from '../components/ui/Badge';
 
 const isApproved = (status) => status === 'APPROVED' || status === 'EXECUTED';
 
@@ -27,19 +27,21 @@ export default function AssetDetail() {
     const { asset, history, loading, error } = useAssetDetail(id);
 
     const back = BACK_BY_ROLE[user?.role] || BACK_BY_ROLE.USER;
-    // Only the current custodian can raise a transfer request for an asset;
-    // managers and admins start one from the Initiate Transfer screen instead.
+    // Only the current custodian can raise a transfer request for an asset —
+    // and only via this button for a plain USER. /transfer/request is a
+    // USER-only route (App.jsx), so a manager/admin who happens to be a
+    // custodian would hit "access denied" here; they start a transfer from
+    // the Initiate Transfer screen instead, which they always have access to.
     const canRequestTransfer =
+        user?.role === 'USER' &&
         Boolean(asset) && asset.owner?.walletAddress === user?.walletAddress;
 
-    const getStatusColor = (status) => {
-        switch (status?.toUpperCase()) {
-            case 'ACTIVE': return 'bg-emerald-900/50 text-emerald-400 border-emerald-700';
-            case 'INACTIVE': return 'bg-slate-700/50 text-slate-400 border-slate-600';
-            case 'MAINTENANCE': return 'bg-amber-900/50 text-amber-400 border-amber-700';
-            default: return 'bg-slate-700/50 text-slate-400 border-slate-600';
-        }
-    };
+    // Custody status isn't a stored field on the asset (see asset.service.js
+    // `getAssetById`) — it's derived here the same way `MyAssets.jsx` does it,
+    // from whether there's a live PENDING transfer request against this asset.
+    const custodyPending = Boolean(
+        asset?.transferRequests?.some((tr) => tr.status === 'PENDING')
+    );
 
     if (loading) {
         return (
@@ -133,15 +135,15 @@ export default function AssetDetail() {
                         <CardContent>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div className="p-3 rounded bg-[#0D1F38] border border-[#1F293D]">
-                                    <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Status</div>
-                                    <span className={`inline-block px-2 py-1 rounded border text-xs font-bold ${getStatusColor(asset.status)}`}>
-                                        {asset.status || 'ACTIVE'}
-                                    </span>
+                                    <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Custody Status</div>
+                                    <CustodyBadge pending={custodyPending} />
                                 </div>
 
                                 <div className="p-3 rounded bg-[#0D1F38] border border-[#1F293D]">
-                                    <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Asset Type</div>
-                                    <div className="text-white text-sm font-bold">{asset.assetType || 'N/A'}</div>
+                                    <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Token ID</div>
+                                    <div className="text-white text-sm font-bold font-mono">
+                                        {asset.tokenId || 'Pending on-chain confirmation'}
+                                    </div>
                                 </div>
 
                                 <div className="p-3 rounded bg-[#0D1F38] border border-[#1F293D]">
@@ -226,11 +228,11 @@ export default function AssetDetail() {
                                                             {new Date(transfer.createdAt).toLocaleString('en-IN')}
                                                         </div>
                                                     </div>
-                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${isApproved(transfer.status)
-                                                        ? 'bg-emerald-900/50 text-emerald-400'
+                                                    <span className={`px-2 py-0.5 rounded border text-[10px] font-bold shrink-0 ${isApproved(transfer.status)
+                                                        ? 'bg-green-100 text-green-800 border-green-300'
                                                         : transfer.status === 'REJECTED'
-                                                            ? 'bg-red-900/50 text-red-400'
-                                                            : 'bg-amber-900/50 text-amber-400'
+                                                            ? 'bg-red-100 text-red-800 border-red-300'
+                                                            : 'bg-amber-100 text-amber-800 border-amber-300'
                                                         }`}>
                                                         {transfer.status}
                                                     </span>

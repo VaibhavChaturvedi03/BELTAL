@@ -13,9 +13,21 @@
 }
 
 /* Shared route feedback for every protected workspace.  Only opacity and
-   transform are animated so navigation remains GPU-friendly. */
+   transform are animated so navigation remains GPU-friendly.
+   Deliberately NOT `both`/`forwards`: the end keyframe's `translateY(0)` is
+   visually a no-op, but any transform value other than `none` — including
+   `translateY(0)` — makes the element a containing block for every
+   `position: fixed`/`absolute` descendant (CSS Transforms spec). With a
+   persistent fill-mode that block becomes permanent, so every full-screen
+   `fixed inset-0` modal rendered inside a page (anything not using
+   createPortal — the quarantine revoke/reinstate dialog, the PACS lockdown
+   dialog, the reject-transfer dialog, etc.) gets positioned/sized against
+   this div instead of the viewport. Plain `none` fill-mode reverts transform
+   to its unanimated default (`none`) the instant the .22s animation ends,
+   which is visually identical to `translateY(0)` here, so this drops the
+   side effect with no visible change to the transition itself. */
 .app-page-transition {
-  animation: app-page-enter .22s cubic-bezier(.2, .8, .2, 1) both;
+  animation: app-page-enter .22s cubic-bezier(.2, .8, .2, 1);
 }
 
 .app-route-loader {
@@ -876,6 +888,17 @@ body {
 .role-console .text-slate-400 { color: #466983 !important; }
 .role-console .text-slate-500 { color: #385d7a !important; }
 
+/* The bright dark-mode gold (#D4AF37) fails contrast on this light ledger
+   surface — same guardrail already applied to .dashboard-theme.light-theme,
+   extended here since these pages use the .role-console/.user-console shell
+   instead. */
+.role-console .text-\[\#D4AF37\],
+.role-console .text-\[\#D4AF37\]\/60,
+.role-console .text-\[\#D4AF37\]\/80,
+.user-console .text-\[\#D4AF37\],
+.user-console .text-\[\#D4AF37\]\/60,
+.user-console .text-\[\#D4AF37\]\/80 { color: #8a6500 !important; }
+
 /* Contrast guardrails for every admin, auditor and manager page in day mode.
    Utility names remain expressive while these values guarantee readable ink on
    the shared light ledger surfaces. */
@@ -977,6 +1000,15 @@ body {
 .dark .role-console .text-gray-700 { color: #c5d9ee !important; }
 .dark .role-console .text-slate-800,
 .dark .role-console .text-gray-800 { color: #eaf3ff !important; }
+
+/* Dark mode is the native habitat for this gold, so undo the light-mode
+   contrast fix above. */
+.dark .role-console .text-\[\#D4AF37\],
+.dark .role-console .text-\[\#D4AF37\]\/60,
+.dark .role-console .text-\[\#D4AF37\]\/80,
+.dark .user-console .text-\[\#D4AF37\],
+.dark .user-console .text-\[\#D4AF37\]\/60,
+.dark .user-console .text-\[\#D4AF37\]\/80 { color: #D4AF37 !important; }
 
 /* Dark overlays can sit outside a console root, so give their utility text the
    same light-on-dark guarantee as the authenticated night workspace. */

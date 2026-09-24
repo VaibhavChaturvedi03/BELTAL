@@ -31,6 +31,19 @@ export const updateRoleSchema = z
     message: 'At least one of role or clearanceLevel must be provided',
   });
 
+// managerId: null explicitly clears the assignment; omitted leaves it as-is.
+// seniorityGrade 1-9 approximates BEL's E1 (Engineer) .. E9 (Executive
+// Director) executive ladder — organizational rank, independent of
+// clearanceLevel (security classification access).
+export const updateOrgAssignmentSchema = z
+  .object({
+    managerId: z.string().uuid('managerId must be a valid identity id').nullable().optional(),
+    seniorityGrade: z.number().int().min(1).max(9).nullable().optional(),
+  })
+  .refine((data) => data.managerId !== undefined || data.seniorityGrade !== undefined, {
+    message: 'At least one of managerId or seniorityGrade must be provided',
+  });
+
 // Empty query params (e.g. `?sbu=`) mean "no filter".
 const emptyToUndefined = (value) => (value === '' ? undefined : value);
 

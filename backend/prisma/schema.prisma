@@ -99,6 +99,20 @@ model User {
   revokedAt        DateTime?
   revocationReason String?
   revokeTxHash     String?
+  // Org-structure layer (issue: user/manager/team mapping), deliberately kept
+  // off-chain and separate from RBAC. Mirrors how BEL itself runs two
+  // independent dimensions: SBU membership (existing, on-chain, used for
+  // access scoping — unchanged by this) and a person-to-person reporting
+  // chain within/across SBUs (this). seniorityGrade is an approximate stand-in
+  // for BEL's E1-E9 executive grade ladder — an organizational rank, NOT the
+  // same thing as clearanceLevel (security classification access). Both are
+  // nullable so existing rows and every current creation flow (registration,
+  // bulk import, demo seed) keep working unchanged; an admin fills them in
+  // via PATCH /admin/identities/:id/manager once this is adopted.
+  seniorityGrade   Int?
+  managerId        String?
+  manager          User?     @relation("ReportsTo", fields: [managerId], references: [id], onDelete: SetNull)
+  directReports    User[]    @relation("ReportsTo")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -117,6 +131,8 @@ model User {
   recoveryRequests      RecoveryRequest[]     @relation("RecoverySubject")
   requestedRecoveries   RecoveryRequest[]     @relation("RecoveryRequestedBy")
   recoveryApprovals     RecoveryApproval[]    @relation("RecoveryApprover")
+
+  @@index([managerId])
 }
 
 // Mirrors an on-chain NFT. `cid` is a cache of the IPFS CID recorded on-chain

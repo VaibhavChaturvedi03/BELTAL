@@ -38,8 +38,8 @@ function Section({ title, children }) {
   return (
     <section className="mb-12">
       <div className="flex items-center gap-3 mb-5">
-        <div className="w-1 h-5 rounded-full bg-[#D4AF37]" />
-        <h2 className="text-[13px] font-bold tracking-widest uppercase text-[#7ab0fe]">{title}</h2>
+        <div className="w-1 h-5 rounded-full bg-[#B8962E]" />
+        <h2 className="text-[13px] font-bold tracking-widest uppercase text-[#1E5FA8]">{title}</h2>
       </div>
       {children}
     </section>
@@ -64,18 +64,18 @@ export default function UIKitPage() {
     <div className="max-w-5xl mx-auto">
 
       {/* Page header */}
-      <div className="mb-10 pb-5 border-b border-[#1F293D]">
-        <span className="text-[10px] font-bold tracking-widest text-[#D4AF37] uppercase">
+      <div className="mb-10 pb-5 border-b border-[#D7E0EA]">
+        <span className="text-[10px] font-bold tracking-widest text-[#B8962E] uppercase">
           Issue #54 — Frontend
         </span>
-        <h1 className="text-2xl font-black text-slate-100 mt-1 mb-2">
+        <h1 className="text-2xl font-black text-[#0D2B4E] mt-1 mb-2">
           UI Kit & Component Showcase
         </h1>
-        <p className="text-[13px] text-slate-400 max-w-2xl leading-relaxed">
-          Defense-grade TrustChain component library. Every component uses the sovereign color
-          system: Navy <code className="text-[#7ab0fe]">#0B192C / #1E3E62</code>, Amber Gold{' '}
-          <code className="text-[#D4AF37]">#D4AF37</code>, Border{' '}
-          <code className="text-slate-400">#1F293D</code>.
+        <p className="text-[13px] text-[#65758A] max-w-2xl leading-relaxed">
+          BELTAL component library. Every component uses the sovereign color
+          system: Navy <code className="text-[#1E5FA8]">#0D2B4E / #1E5FA8</code>, Amber Gold{' '}
+          <code className="text-[#B8962E]">#B8962E</code>, Border{' '}
+          <code className="text-[#65758A]">#D7E0EA</code>.
         </p>
       </div>
 
@@ -119,7 +119,7 @@ export default function UIKitPage() {
               <CardTitle>Standard Card</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-[13px] text-slate-400 leading-relaxed">
+              <p className="text-[13px] text-[#65758A] leading-relaxed">
                 Default defense container. Hover to see the lift effect.
               </p>
             </CardContent>
@@ -128,10 +128,10 @@ export default function UIKitPage() {
           <Card goldAccent hoverable>
             <CardHeader>
               <CardTitle>Gold Accent Card</CardTitle>
-              <span className="text-[10px] font-bold text-[#D4AF37] uppercase tracking-widest">Level 5</span>
+              <span className="text-[10px] font-bold text-[#B8962E] uppercase tracking-widest">Level 5</span>
             </CardHeader>
             <CardContent>
-              <p className="text-[13px] text-slate-400 leading-relaxed">
+              <p className="text-[13px] text-[#65758A] leading-relaxed">
                 Navratna gold left-border strip for classified / priority items.
               </p>
             </CardContent>
@@ -145,7 +145,7 @@ export default function UIKitPage() {
               <CardTitle>With Footer</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-[13px] text-slate-400">Standard card with action footer row.</p>
+              <p className="text-[13px] text-[#65758A]">Standard card with action footer row.</p>
             </CardContent>
             <CardFooter>
               <Button size="sm" variant="ghost">Cancel</Button>
@@ -158,7 +158,7 @@ export default function UIKitPage() {
       {/* ── 3. Table ────────────────────────────────────── */}
       <Section title="3 · Ledger Table">
         <Table columns={TABLE_COLS} data={SAMPLE_ROWS} />
-        <p className="mt-3 text-[11px] text-slate-600">
+        <p className="mt-3 text-[11px] text-[#65758A]">
           Empty state demo:
         </p>
         <Table columns={TABLE_COLS} data={[]} className="mt-2" />
@@ -184,7 +184,7 @@ export default function UIKitPage() {
             </>
           }
         >
-          <p className="text-slate-400 text-[13px] leading-relaxed mb-4">
+          <p className="text-[#65758A] text-[13px] leading-relaxed mb-4">
             The following Decentralized Identifier (DID) has been submitted for sovereign
             verification. Confirm cryptographic binding before on-chain commitment.
           </p>

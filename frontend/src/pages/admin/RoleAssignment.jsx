@@ -3,8 +3,13 @@ import { adminApi } from '../../services/api';
 import { useTransaction } from '../../context/TransactionContext';
 import Card, { CardContent, CardHeader, CardTitle } from '../../components/ui/Card';
 
+// The reinstate-then-retry repair path can chain up to 5 sequential Sepolia
+// confirmations (register + grant, then updateClearance + grant + revoke-old)
+// across its two calls — the default 90s per-call budget assumes at most 2-3.
+const REPAIR_TIMEOUT = 180_000;
+
 export default function RoleAssignment() {
-    const { showSuccess, showError } = useTransaction();
+    const { showSuccess, showError, showPending, removeToast } = useTransaction();
     const [identities, setIdentities] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
@@ -30,11 +35,41 @@ export default function RoleAssignment() {
     const handleUpdate = async (id, currentIdentity) => {
         setSaving(id);
         try {
-            await adminApi.updateRole(id, {
+            const payload = {
                 role: currentIdentity.role,
                 clearanceLevel: currentIdentity.clearanceLevel,
-            });
-            showSuccess("Role and clearance updated successfully!");
+            };
+            let result = await adminApi.updateRole(id, payload);
+
+            // This specific warning means the identity was never actually
+            // confirmed on-chain (DB row exists, IdentityRegistry doesn't).
+            // No amount of retrying this same call fixes that — but
+            // reinstateIdentity's re-register-on-chain primitive does, safely
+            // (it's a no-op if the identity turns out to already be active).
+            // Self-heal once, automatically, rather than making the admin
+            // hunt for a separate "fix this" control.
+            const needsRepair = /never fully registered on-chain/i.test(result?.chain?.warning || '');
+            if (needsRepair) {
+                // The repair (re-register) plus the retried update can chain
+                // up to 5 sequential Sepolia confirmations between them — the
+                // default per-call budget assumes at most 2-3, so give this
+                // path real headroom and tell the admin it'll take longer.
+                const pendingId = showPending('Repairing on-chain registration, then re-applying the update — this can take a minute or two...');
+                try {
+                    await adminApi.reinstateIdentity(id, { timeout: REPAIR_TIMEOUT });
+                    result = await adminApi.updateRole(id, payload, { timeout: REPAIR_TIMEOUT });
+                } finally {
+                    removeToast(pendingId);
+                }
+            }
+
+            if (result?.chain?.warning) {
+                showError(result.chain.warning);
+            } else if (needsRepair) {
+                showSuccess("This identity was re-registered on-chain to fix a stale record, then its role/clearance was updated.");
+            } else {
+                showSuccess("Role and clearance updated successfully!");
+            }
             fetchIdentities(); // Refresh list
         } catch (err) {
             showError("Failed to update: " + (err.uiMessage || err.message));
@@ -52,14 +87,14 @@ export default function RoleAssignment() {
     return (
         <div className="role-console min-h-full p-6 sm:p-8 space-y-6">
             <div className="flex items-center gap-2 mb-3">
-                <span className="h-px flex-1 bg-gradient-to-r from-[#D4AF37]/40 to-transparent" />
-                <span className="text-[9px] font-black tracking-[0.22em] text-[#D4AF37]/60 uppercase">
+                <span className="h-px flex-1 bg-gradient-to-r from-[#B8962E]/40 to-transparent" />
+                <span className="text-[9px] font-black tracking-[0.22em] text-[#B8962E]/80 uppercase">
                     ◈ RESTRICTED — ADMIN CLEARANCE
                 </span>
-                <span className="h-px flex-1 bg-gradient-to-l from-[#D4AF37]/40 to-transparent" />
+                <span className="h-px flex-1 bg-gradient-to-l from-[#B8962E]/40 to-transparent" />
             </div>
 
-            <h1 className="text-2xl font-black text-white tracking-wide">Role & Clearance Assignment</h1>
+            <h1 className="text-2xl font-black text-[#0D2B4E] tracking-wide">Role & Clearance Assignment</h1>
 
             <Card goldAccent>
                 <CardHeader>
@@ -74,11 +109,11 @@ export default function RoleAssignment() {
                         </div>
                     )}
                     {loading ? (
-                        <p className="text-slate-400">Loading identities...</p>
+                        <p className="text-[#65758A]">Loading identities...</p>
                     ) : (
                         <div className="overflow-x-auto">
-                            <table className="w-full text-left text-sm text-slate-300">
-                                <thead className="text-xs uppercase text-[#D4AF37] border-b border-[#1F293D]">
+                            <table className="w-full text-left text-sm text-[#0D2B4E]">
+                                <thead className="text-xs uppercase text-[#1E5FA8] border-b border-[#D7E0EA]">
                                     <tr>
                                         <th className="px-4 py-3">Display Name</th>
                                         <th className="px-4 py-3">Wallet Address</th>
@@ -88,11 +123,11 @@ export default function RoleAssignment() {
                                         <th className="px-4 py-3">Action</th>
                                     </tr>
                                 </thead>
-                                <tbody className="divide-y divide-[#1F293D]">
+                                <tbody className="divide-y divide-[#E4EAF1]">
                                     {identities.map((user) => (
-                                        <tr key={user.id} className="hover:bg-white/5 transition-colors">
-                                            <td className="px-4 py-3 font-medium text-white">{user.displayName || 'Unknown'}</td>
-                                            <td className="px-4 py-3 font-mono text-xs text-slate-400">{user.walletAddress}</td>
+                                        <tr key={user.id} className="hover:bg-[#E8F1FB]/55 transition-colors">
+                                            <td className="px-4 py-3 font-medium text-[#0D2B4E]">{user.displayName || 'Unknown'}</td>
+                                            <td className="px-4 py-3 font-mono text-xs text-[#65758A]">{user.walletAddress}</td>
 
                                             {/* Role Dropdown */}
                                             <td className="px-4 py-3">
@@ -100,7 +135,7 @@ export default function RoleAssignment() {
                                                     aria-label={`Role for ${user.displayName || user.walletAddress}`}
                                                     value={user.role}
                                                     onChange={(e) => handleChange(user.id, 'role', e.target.value)}
-                                                    className="bg-[#0D1F38] border border-[#1F293D] rounded px-2 py-1 text-xs focus:border-[#1E5FA8] outline-none"
+                                                    className="bg-white border border-[#D7E0EA] rounded px-2 py-1 text-xs text-[#0D2B4E] focus:border-[#1E5FA8] outline-none"
                                                 >
                                                     <option value="USER">USER</option>
                                                     <option value="MANAGER">MANAGER</option>
@@ -118,7 +153,7 @@ export default function RoleAssignment() {
                                                     aria-label={`Clearance tier for ${user.displayName || user.walletAddress}`}
                                                     value={user.clearanceLevel}
                                                     onChange={(e) => handleChange(user.id, 'clearanceLevel', e.target.value)}
-                                                    className="bg-[#0D1F38] border border-[#1F293D] rounded px-2 py-1 text-xs focus:border-[#1E5FA8] outline-none"
+                                                    className="bg-white border border-[#D7E0EA] rounded px-2 py-1 text-xs text-[#0D2B4E] focus:border-[#1E5FA8] outline-none"
                                                 >
                                                     <option value={1}>1 - Restricted</option>
                                                     <option value={2}>2 - Confidential</option>
